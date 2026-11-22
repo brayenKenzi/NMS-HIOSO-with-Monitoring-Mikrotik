@@ -18,15 +18,37 @@ const defaultOids = {
   rx: root + '.14.2.1.8',
   mac: root + '.3.2.1.11',
 };
+const OLT_PRESETS = {
+  hioso: {
+    oids: defaultOids,
+    rxDivider: 1,
+    rxIndexSuffix: '',
+  },
+  hsgq: {
+    oids: {
+      name: '1.3.6.1.4.1.50224.3.3.2.1.2',
+      status: '1.3.6.1.4.1.50224.3.3.2.1.8',
+      rx: '1.3.6.1.4.1.50224.3.3.3.1.4',
+      mac: '1.3.6.1.4.1.50224.3.3.2.1.7',
+    },
+    rxDivider: 100,
+    rxIndexSuffix: '.0.0',
+  },
+};
+
+function detectVendor(device) {
+  if (device?.vendor === 'hsgq' || device?.oids?.rx === OLT_PRESETS.hsgq.oids.rx) return 'hsgq';
+  return 'hioso';
+}
 
 function createNmsServer(dataDir, options = {}) {
   const dbPath = join(dataDir, 'nms-data.sqlite');
   const configPath = join(dataDir, 'olts.json');
   const store = openStore(dbPath);
 
-  // Initialize router configuration
-  const storedRouter = store.getRouterConfig();
-  routerModule.initRouterConfig(storedRouter || options.routerConfig);
+  // Initialize router configurations (multi-MikroTik + legacy migration)
+  const storedRouters = store.getRouterConfigs();
+  routerModule.initRouterConfigs(storedRouters, options.routerConfig);
 
   // Initialize OLT list from disk or seeds
   let config = [];
@@ -127,7 +149,10 @@ function createNmsServer(dataDir, options = {}) {
               break;
             }
             const idx = vb.oid.slice(oid.length + 1);
-            values.set(idx, String(vb.value).trim());
+            const val = opts.binaryMac && Buffer.isBuffer(vb.value) && vb.value.length === 6
+              ? vb.value.toString('hex').toUpperCase()
+              : String(vb.value).replace(/\0+$/, '').trim();
+            values.set(idx, val);
             currentOid = vb.oid;
             if (++count > 4096) {
               return finish(new Error('Batas pembacaan kolom ONU terlampaui.'));
@@ -181,18 +206,26 @@ function createNmsServer(dataDir, options = {}) {
       if (!community) throw new Error('Community baca belum diisi.');
       const port = device.port ?? 161;
       const host = device.host;
-      const oids = { ...defaultOids, ...device.oids };
-      const maxRep = device.maxRep ?? 15;
-      const pauseMs = maxRep >= 12 ? 20 : 40;
+      const vendor = detectVendor(device);
+      const oids = { ...(OLT_PRESETS[vendor]?.oids || defaultOids), ...device.oids };
+      const maxRep = device.maxRep ?? (vendor === 'hsgq' ? 20 : 15);
+      const pauseMs = vendor === 'hsgq' ? 15 : (maxRep >= 12 ? 20 : 40);
       const walkOpts = { timeout: 3500, retries: 2, maxRep, pauseMs, signal };
 
       // 2-Tier Sequential Polling:
       // Always poll dynamic columns (Status + RX).
       // Poll static columns (Name + MAC) only on first run, every 10 min, or when new ONU index appears.
-      const readCol = oid => readColumnPaced(host, community, port, oid, walkOpts);
+      const readCol = (oid, extra = {}) => readColumnPaced(host, community, port, oid, { ...walkOpts, ...extra });
       const columns = (async () => {
         const states = await readCol(oids.status);
-        const powers = await readCol(oids.rx);
+        let powers = await readCol(oids.rx);
+        if (vendor === 'hsgq') {
+          const normalized = new Map();
+          for (const [k, v] of powers) {
+            if (k.endsWith('.0.0')) normalized.set(k.slice(0, -4), v);
+          }
+          powers = normalized;
+        }
 
         let hasNewIndex = false;
         if (device.metaNames && device.metaNames.size > 0) {
@@ -212,7 +245,7 @@ function createNmsServer(dataDir, options = {}) {
         let macs = device.metaMacs || new Map();
         if (needMeta) {
           names = await readCol(oids.name);
-          macs = await readCol(oids.mac).catch(() => device.metaMacs || new Map());
+          macs = await readCol(oids.mac, { binaryMac: true }).catch(() => device.metaMacs || new Map());
           device.metaNames = names;
           device.metaMacs = macs;
           device.metaUpdatedAt = Date.now();
@@ -289,8 +322,15 @@ function createNmsServer(dataDir, options = {}) {
   }
 
   function listOlts() {
-    return devices.map(({ name, host, port = 161, updated, error, polling }) =>
-      ({ name, host, port, updated, error, polling }));
+    return devices.map((d) => ({
+      name: d.name,
+      host: d.host,
+      port: d.port ?? 161,
+      vendor: detectVendor(d),
+      updated: d.updated,
+      error: d.error,
+      polling: d.polling,
+    }));
   }
 
   function listOltsFull() {
@@ -393,7 +433,12 @@ function createNmsServer(dataDir, options = {}) {
           !Number.isInteger(port) || port < 1 || port > 65535) {
         return [400, 'Isi nama OLT, community baca, dan port UDP yang valid.'];
       }
-      const newEntry = { name, host, community, port };
+      const vendor = data.vendor === 'hsgq' ? 'hsgq' : 'hioso';
+      const newEntry = { name, host, community, port, vendor };
+      if (vendor === 'hsgq') {
+        newEntry.oids = { ...OLT_PRESETS.hsgq.oids };
+        newEntry.rxDivider = OLT_PRESETS.hsgq.rxDivider;
+      }
       if (adminUser) newEntry.adminUser = adminUser;
       if (adminPassword) newEntry.adminPassword = adminPassword;
       added = makeDevice(newEntry);
@@ -427,7 +472,7 @@ function createNmsServer(dataDir, options = {}) {
   function clientView(device, row, pppoe) {
     return {
       ...row,
-      pppoe: pppoe?.match(row),
+      pppoe: pppoe?.match(row, device.host),
       source: { host: device.host, name: device.name, directRestart: canRestart(device, '127.0.0.1') },
       stale: Boolean(device.pollFailed || !device.updated || Date.now() - Date.parse(device.updated) > 240000),
       sampledAt: device.updated,
@@ -476,14 +521,19 @@ function createNmsServer(dataDir, options = {}) {
       session.get([oids.mac + '.' + index, oids.status + '.' + index], (error, bindings) => {
         session.close();
         let backOnline = false;
-        if (!error && bindings.every(binding => !snmp.isVarbindError(binding)) &&
-            String(bindings[0].value).toUpperCase() === mac.replaceAll(':', '')) {
-          const status = String(bindings[1].value);
-          if (status === '2') wentDown = true;
-          if (status === '1' && wentDown) backOnline = true;
-          try {
-            if (status === '2' || backOnline) store.recordRecovery(host, mac, backOnline ? 'Online' : 'Offline');
-          } catch (error) { console.error('Gagal menyimpan status restart:', error.message); }
+        if (!error && bindings.every(binding => !snmp.isVarbindError(binding))) {
+          const rawMac = bindings[0].value;
+          const observedMac = Buffer.isBuffer(rawMac) && rawMac.length === 6
+            ? rawMac.toString('hex').toUpperCase()
+            : String(rawMac).toUpperCase().replace(/[^0-9A-F]/g, '');
+          if (observedMac === mac.replaceAll(':', '')) {
+            const status = String(bindings[1].value);
+            if (status === '2') wentDown = true;
+            if (status === '1' && wentDown) backOnline = true;
+            try {
+              if (status === '2' || backOnline) store.recordRecovery(host, mac, backOnline ? 'Online' : 'Offline');
+            } catch (err) { console.error('Gagal menyimpan status restart:', err.message); }
+          }
         }
         if (!backOnline) setTimeout(observe, 5000).unref();
       });
@@ -536,13 +586,12 @@ function createNmsServer(dataDir, options = {}) {
   const pollAll = () => Promise.all(devices.map(dev => poll(dev)));
 
   const controls = {
-    async checkNetwork() {
+      async checkNetwork() {
       const checkedAt = new Date().toISOString();
       if (!devices.length && initialSyncPromise) {
         await Promise.race([initialSyncPromise, new Promise(r => setTimeout(r, 4000))]);
       }
-      const routerCfg = routerModule.getRouterConfig();
-      const hasRouter = Boolean(routerCfg?.configured && routerCfg.url);
+      const hasRouter = routerModule.getRouterConfigs().length > 0;
       if (!devices.length && !hasRouter) {
         return {
           reachable: true,
@@ -641,7 +690,7 @@ function createNmsServer(dataDir, options = {}) {
               return {
                 ...row,
                 rxDrop: drop >= 0.5 ? drop : 0,
-                pppoe: pppoe.match(row),
+                pppoe: pppoe.match(row, host),
               };
             }),
             updated,
@@ -711,10 +760,10 @@ function createNmsServer(dataDir, options = {}) {
           try {
             await syncOltsFromCloud();
             await store.syncFromCloud();
-            const rCfg = store.getRouterConfig();
-            if (rCfg?.url) {
-              routerModule.updateRouterConfig(rCfg);
-              void routerModule.pollPppoe();
+            const rList = store.getRouterConfigs();
+            if (rList.length > 0) {
+              routerModule.updateRouterConfigs(rList);
+              void routerModule.pollPppoe(true);
             }
           } catch {}
         })();
@@ -739,6 +788,7 @@ function createNmsServer(dataDir, options = {}) {
     clearInterval(snmpIntervalId);
     clearInterval(pppoeIntervalId);
     clearInterval(sampleIntervalId);
+    routerModule.closeRouters?.();
     server.closeAllConnections?.();
     server.close();
     store.close?.();

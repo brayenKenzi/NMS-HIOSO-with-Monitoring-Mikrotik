@@ -1,6 +1,6 @@
 {
   "appId": "id.momonet.nms.probe",
-  "appName": "MOMO NET NMS",
+  "appName": "ADT Monitoring",
   "webDir": "www",
   "server": {
     "androidScheme": "http",

@@ -2,25 +2,36 @@ const { app, channel } = require('bridge');
 const { createNmsServer } = require('./server/server.cjs');
 const { localHttp, localUdp, sqlite, readOlt, readRouter } = require('./probes.cjs');
 
+process.on('uncaughtException', (err) => {
+  console.error('ADT Runtime uncaughtException:', err?.stack || err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('ADT Runtime unhandledRejection:', reason);
+});
+
 const dataDir = app.datadir();
 let nmsInstance = null;
 let activePort = null;
-let startError = null;
+let startPromise = null;
 
 async function ensureServer() {
   if (activePort) return activePort;
-  if (!nmsInstance) {
-    nmsInstance = createNmsServer(dataDir, { port: 8080 });
+  if (startPromise) return startPromise;
+  startPromise = (async () => {
+    if (!nmsInstance) {
+      nmsInstance = createNmsServer(dataDir, { port: 8080 });
+    }
     try {
       activePort = await nmsInstance.start();
-      console.log('MOMO NET NMS Server aktif di port:', activePort);
+      console.log('ADT Monitoring Server aktif di port:', activePort);
+      return activePort;
     } catch (err) {
-      startError = err.message;
+      startPromise = null;
       console.error('Gagal memulai NMS Server:', err.message);
       throw err;
     }
-  }
-  return activePort;
+  })();
+  return startPromise;
 }
 
 // Start NMS server on launch

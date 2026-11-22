@@ -7,7 +7,7 @@ const target = path.join(__dirname, '..', 'src', 'server', 'static-assets.cjs');
 const html = fs.readFileSync(path.join(srcAssets, 'dashboard.html'), 'utf8');
 const ops = fs.readFileSync(path.join(srcAssets, 'operations.js'), 'utf8');
 const worker = fs.readFileSync(path.join(srcAssets, 'nms-worker.js'), 'utf8');
-const logo = fs.readFileSync(path.join(srcAssets, 'momo-logo.png')).toString('base64');
+const logo = fs.readFileSync(path.join(srcAssets, 'adt-logo.png')).toString('base64');
 
 const content = `// Auto-generated static assets bundle
 module.exports = {

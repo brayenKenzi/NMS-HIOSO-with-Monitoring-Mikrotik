@@ -2,7 +2,7 @@
 <html lang="id">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MOMO NET MONITORING SYSTEM</title>
+<title>ADT Monitoring</title>
 <style>
 :root {
   color-scheme: light;
@@ -55,7 +55,7 @@ h1{font-size:clamp(25px,3.4vw,40px);font-weight:750;letter-spacing:-.045em;line-
 .meta p{margin-top:4px;color:var(--muted);font-size:13px}
 #error{color:#912239;font-weight:650}
 #error:empty{display:none}
-.toolbar{display:grid;grid-template-columns:minmax(160px,1.6fr) repeat(3,minmax(120px,1fr));gap:10px;padding:16px 20px}
+.toolbar{display:grid;grid-template-columns:minmax(160px,1.6fr) repeat(4,minmax(110px,1fr));gap:10px;padding:16px 20px}
 label{display:grid;gap:5px;color:var(--muted);font-size:12px;font-weight:700}
 input,select{width:100%;min-width:0;min-height:44px;border:1px solid #b9c8df;border-radius:12px;padding:9px 10px;background:#f8faff;color:var(--ink);font-size:14px;font-weight:550}
 input::placeholder{color:#60718a}
@@ -120,6 +120,7 @@ tbody tr:hover{background:#f5f8ff}
   .shell{grid-template-columns:minmax(0,1fr)}
   .sidebar{position:static;min-height:0;border-right:0;border-bottom:1px solid var(--line);padding:14px clamp(15px,2.6vw,42px)}
   .brand{margin:0 0 12px}.sidebar h2{margin-left:0}.inventory{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .toolbar{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 @media(max-width:760px){
   main{padding-top:15px}.hero{min-height:0}.hero::before{width:80%}
@@ -128,6 +129,7 @@ tbody tr:hover{background:#f5f8ff}
   .inventory{grid-template-columns:repeat(2,minmax(0,1fr))}
   .inventory button{font-size:12px;padding:8px}.inventory small{font-size:11px}
   .toolbar{grid-template-columns:repeat(2,minmax(0,1fr));padding:12px}
+  .toolbar label:first-child{grid-column:1/-1}
   input,select{font-size:16px}.meta{padding:14px 12px 0}.pager{padding:10px 12px}
   .scroll{padding:0 12px}
   table,tbody{display:block;width:100%}
@@ -146,7 +148,7 @@ tbody tr:hover{background:#f5f8ff}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}button:active{transform:none!important}}
 </style>
 <div class="shell">
-<aside class="sidebar"><div class="brand"><img src="/momo-logo.png" alt="Momo Network"></div><h2>Tampilan pelanggan</h2><nav id="inventory" class="inventory" aria-label="Tampilan pelanggan"></nav></aside>
+<aside class="sidebar"><div class="brand"><img src="/momo-logo.png" alt="ADT Monitoring"></div><h2>Tampilan pelanggan</h2><nav id="inventory" class="inventory" aria-label="Tampilan pelanggan"></nav></aside>
 <main>
 <nav class="operations" id="operations-menu" aria-label="Operasional" hidden>
   <button type="button" class="restart-button" id="alarm-menu">Alarm</button>
@@ -172,6 +174,7 @@ tbody tr:hover{background:#f5f8ff}
 <div class="meta"><h2 id="table-title">Pelanggan &amp; trafik</h2><p id="summary" role="status">Memuat data OLT…</p><p id="olt-health"></p><p id="pppoe-health"></p><p id="error" role="alert"></p><p id="ops-notice" role="status" style="color:var(--blue);font-weight:650"></p><button type="button" class="restart-button critical-quick-btn" id="critical-filter-btn" aria-pressed="false">⚠ Redaman Kritis &amp; Drop (0)</button></div>
 <div class="toolbar">
 <label>Cari pelanggan<input type="search" id="search" placeholder="Nama, PPPoE, IP, atau MAC"></label>
+<label>PON<select id="pon-filter"><option value="">Semua PON</option></select></label>
 <label>Status<select id="state"><option value="">Semua status</option><option>Online</option><option>Offline</option><option value="unknown">Tidak diketahui</option></select></label>
 <label>Kondisi redaman<select id="power"><option value="">Semua kondisi</option><option value="critical">Kritis &amp; Drop Mendadak (≤ −27 dBm / drop ≥ 3 dB)</option><option value="highlight">Redaman tinggi (mis. −29,89)</option><option value="good">Baik (−29 dBm atau lebih kuat)</option><option value="missing">Belum terukur</option></select></label>
 <label>Kecocokan PPPoE<select id="pppoe-filter"><option value="">Semua</option><option value="paired">Sesi cocok</option><option value="ambiguous">Ambigu</option><option value="unmatched">Tanpa pasangan</option></select></label>
@@ -255,6 +258,7 @@ const bannerRetryBtn = document.querySelector('#banner-retry-btn');
 const authNetworkWarning = document.querySelector('#auth-network-warning');
 const inventory = document.querySelector('#inventory');
 const activeDevice = document.querySelector('#active-device');
+const ponFilter = document.querySelector('#pon-filter');
 const state = document.querySelector('#state');
 const power = document.querySelector('#power');
 const search = document.querySelector('#search');
@@ -298,6 +302,36 @@ let loggedIn = false;
 let dashboardLoopStarted = false;
 let networkCheckInFlight = false;
 let loadTimer = null;
+let lastPonOptionsKey = '';
+
+function extractPonNumber(index) {
+  const str = String(index ?? '');
+  if (/^\d+$/.test(str)) {
+    const p = (Number(str) >>> 8) & 0xFF;
+    return p >= 1 ? String(p) : null;
+  }
+  const m = /^\d+\.(\d+)\.\d+$/.exec(str);
+  return m ? m[1] : null;
+}
+
+function syncPonOptions(entries) {
+  const counts = new Map();
+  for (const row of entries) {
+    const pon = extractPonNumber(row.index);
+    if (pon) counts.set(pon, (counts.get(pon) ?? 0) + 1);
+  }
+  const sorted = [...counts.keys()].sort((a, b) => Number(a) - Number(b));
+  const sig = sorted.map(p => p + ':' + counts.get(p)).join(',');
+  if (sig === lastPonOptionsKey) return;
+  lastPonOptionsKey = sig;
+  const previous = ponFilter.value;
+  const opts = [new Option('Semua PON', '')];
+  for (const pon of sorted) {
+    opts.push(new Option('PON ' + pon + ' (' + counts.get(pon) + ')', pon));
+  }
+  ponFilter.replaceChildren(...opts);
+  ponFilter.value = sorted.includes(previous) ? previous : '';
+}
 
 function setText(node, text) {
   if (node.textContent !== text) node.textContent = text;
@@ -555,17 +589,21 @@ function render() {
   const currentOltDevice = selected === 'all' ? null : devices.find(d => d.host === selected);
   restartSnmpBtn.hidden = !currentOltDevice;
   const entries = current?.rows ?? [];
-  document.querySelector('#total').textContent = current?.updated ? entries.length : '—';
-  document.querySelector('#online').textContent = current?.updated ? entries.filter(row => row.status === 'Online').length : '—';
-  document.querySelector('#offline').textContent = current?.updated ? entries.filter(row => row.status === 'Offline').length : '—';
-  document.querySelector('#with-rx').textContent = current?.updated ? entries.filter(row => row.rx !== null).length : '—';
-  const critCount = entries.filter(isCriticalOrDrop).length;
+  syncPonOptions(entries);
+  const ponScoped = ponFilter.value
+    ? entries.filter(row => extractPonNumber(row.index) === ponFilter.value)
+    : entries;
+  document.querySelector('#total').textContent = current?.updated ? ponScoped.length : '—';
+  document.querySelector('#online').textContent = current?.updated ? ponScoped.filter(row => row.status === 'Online').length : '—';
+  document.querySelector('#offline').textContent = current?.updated ? ponScoped.filter(row => row.status === 'Offline').length : '—';
+  document.querySelector('#with-rx').textContent = current?.updated ? ponScoped.filter(row => row.rx !== null).length : '—';
+  const critCount = ponScoped.filter(isCriticalOrDrop).length;
   setText(criticalFilterBtn, '⚠ Redaman Kritis & Drop (' + critCount + ')');
   criticalFilterBtn.setAttribute('aria-pressed', String(power.value === 'critical'));
   const query = search.value.trim().toLowerCase();
   const macQuery = /^(?:[a-f0-9]{2}[:-]){5}[a-f0-9]{2}$|^[a-f0-9]{12}$/i.test(query)
     ? query.replace(/[:-]/g, '') : null;
-  const matches = entries.filter(row =>
+  const matches = ponScoped.filter(row =>
     ([row.name, row.mac, row.pppoe?.username, row.pppoe?.address, row.source.name].join(' ').toLowerCase().includes(query) ||
       (macQuery && row.mac?.replace(/:/g, '').toLowerCase() === macQuery)) &&
     (!state.value || (row.status ?? 'unknown') === state.value) &&
@@ -592,12 +630,19 @@ function render() {
       : hasDrop ? 'Drop −' + format.format(row.rxDrop) + ' dB'
       : attenuationCondition(row.rx) === 'highlight' ? 'Redaman tinggi'
       : isCrit ? 'Redaman kritis' : null;
+    const multiRouters = (current?.pppoe?.routers?.length ?? 0) > 1;
+    const pppDetail = paired
+      ? [label, multiRouters && session.routerName ? session.routerName : ''].filter(Boolean).join(' · ')
+      : null;
+    const ponNum = extractPonNumber(row.index);
+    const clientDetail = [selected === 'all' ? row.source.name : null, ponNum ? 'PON ' + ponNum : null]
+      .filter(Boolean).join(' · ') || null;
     paintRow(tr, [
-      [row.name || null, selected === 'all' ? row.source.name : null], [row.mac, null, 'numeric'],
+      [row.name || null, clientDetail], [row.mac, null, 'numeric'],
       [row.status, null, row.status?.toLowerCase()],
       [row.rx === null ? null : format.format(row.rx) + ' dBm', rxDetail,
         highlighted ? 'numeric attenuation-alert' : 'numeric'],
-      [paired ? session.username : label, paired ? label : null,
+      [paired ? session.username : label, pppDetail,
         paired ? 'paired' : session.state === 'ambiguous' ? 'ambiguous' : null, paired ? session.address : null],
       [session.uptime, null, 'numeric'],
       [trafficRate(session.txBps), totalGb(session.txGB), 'numeric'],
@@ -617,7 +662,7 @@ function render() {
     ? new Date(current.updated).toLocaleString('id-ID', {timeZone:'Asia/Makassar'}) + ' WITA'
     : 'Belum ada data';
   setText(summary, current
-    ? matches.length + ' dari ' + current.rows.length + ' ONU'
+    ? matches.length + ' dari ' + ponScoped.length + ' ONU' + (ponFilter.value ? ' (PON ' + ponFilter.value + ')' : '')
     : fetchError || inventoryLoaded ? 'OLT belum tersedia' : 'Memuat data OLT…');
   setText(oltHealth, current ? (selected === 'all' ? 'Sampel SNMP terlama · ' : 'SNMP · ') + updated +
     (current.polling ? ' · Membaca…' : '') : '');
@@ -626,16 +671,19 @@ function render() {
   const online = pppoe?.available && pppoe.inventoryReady && !fetchError;
   setText(live, online ? 'PPPoE aktif' : fetchError || pppoe?.error ? 'Koneksi terganggu' : 'Menunggu PPPoE');
   live.dataset.active = Boolean(online);
+  const routersList = pppoe?.routers ?? [];
+  const routerSummary = routersList.length > 1
+    ? routersList.filter(r => r.available).length + '/' + routersList.length + ' MikroTik · ' : '';
   pppoeHealth.textContent = online
-    ? entries.filter(isPaired).length + ' cocok · ' + entries.filter(row => row.pppoe?.state === 'ambiguous').length +
+    ? routerSummary + entries.filter(isPaired).length + ' cocok · ' + entries.filter(row => row.pppoe?.state === 'ambiguous').length +
       ' ambigu · Sampel trafik ' + new Date(pppoe.sampledAt).toLocaleTimeString('id-ID', {timeZone:'Asia/Makassar'}) +
-      ' WITA · Interval ' + ((pppoe.intervalMs ?? 2000) / 1000) + ' detik'
+      ' WITA · Interval ' + ((pppoe.intervalMs ?? 3000) / 1000) + ' detik'
     : !pppoe?.configured ? 'MikroTik PPPoE belum dikonfigurasi.'
     : pppoe.error ? 'Pembacaan PPPoE gagal. ' + pppoe.error
     : fetchError ? 'Data PPPoE terakhir ditampilkan.'
     : 'Menunggu data PPPoE dan inventaris MAC OLT…';
   empty.hidden = matches.length > 0;
-  empty.textContent = (query || state.value || power.value || pppoeFilter.value) && current?.updated
+  empty.textContent = (query || ponFilter.value || state.value || power.value || pppoeFilter.value) && current?.updated
     ? 'Tidak ada ONU yang cocok.' : current?.polling ? 'Menunggu hasil SNMP…' : 'Belum ada ONU untuk ditampilkan.';
 }
 
@@ -667,7 +715,7 @@ function renderInventory() {
 async function load() {
   clearTimeout(loadTimer);
   try {
-    const response = await fetch('/api/olts');
+    const response = await fetch('/api/olts', { signal: AbortSignal.timeout(10000) });
     if (response.status === 401) {
       location.reload();
       return;
@@ -751,6 +799,7 @@ bannerRetryBtn.onclick = () => {
 window.__onAppResume = () => {
   networkNoticeDismissed = false;
   void runStartupNetworkCheck(false);
+  if (loggedIn) void load();
 };
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
@@ -772,6 +821,7 @@ function resetPage() {
   page = 0;
   render();
 }
+ponFilter.addEventListener('change', resetPage);
 state.addEventListener('change', resetPage);
 power.addEventListener('change', resetPage);
 for (const button of sortButtons) {

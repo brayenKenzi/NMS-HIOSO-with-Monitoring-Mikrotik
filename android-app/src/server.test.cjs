@@ -4,9 +4,14 @@ const assert = require('node:assert/strict');
 const { mkdtempSync, rmSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
+const net = require('node:net');
+const http = require('node:http');
+const crypto = require('node:crypto');
 const { openStore } = require('./server/store.cjs');
 const { createNmsServer } = require('./server/server.cjs');
 const { pppoeView } = require('./server/pppoe.cjs');
+const { encodeWord, encodeSentence, runRosApiCommands, probeRosApi, closeAllRosApiSessions } = require('./server/ros-api.cjs');
+const { canRestart, restartRequest, isHsgqDevice, decodeHsgqIndex } = require('./server/restart-onu.cjs');
 
 test('store initializes, handles admin setup, session, pin, and settings', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'momo-test-'));
@@ -32,10 +37,19 @@ test('store initializes, handles admin setup, session, pin, and settings', async
     const pinToken = await store.loginPin('123456');
     assert.ok(pinToken);
 
-    // Router settings
+    // Router settings (legacy single -> multi migration)
     store.setRouterConfig({ url: 'http://10.0.1.2:808', username: 'admin', password: 'secret' });
     const routerCfg = store.getRouterConfig();
     assert.equal(routerCfg.url, 'http://10.0.1.2:808');
+    const migratedRouters = store.getRouterConfigs();
+    assert.equal(migratedRouters.length, 1);
+    assert.equal(migratedRouters[0].url, 'http://10.0.1.2:808');
+    assert.equal(migratedRouters[0].id, 'default');
+    store.setRouterConfigs([
+      { id: 'r1', name: 'Site A', url: 'http://10.0.1.2:808', username: 'admin', password: 'secret', oltHosts: ['192.168.0.99'] },
+      { id: 'r2', name: 'Site B', url: 'http://192.168.100.1:808', username: 'root', password: 'pw2', oltHosts: ['192.168.100.2'] },
+    ]);
+    assert.equal(store.getRouterConfigs().length, 2);
 
     // OLT snapshot cache (for instant startup UI)
     assert.equal(store.loadOltCache('192.168.0.99'), null);
@@ -136,7 +150,9 @@ test('nms server starts and serves dashboard and API', async () => {
     const resHtml = await fetch('http://127.0.0.1:' + port + '/');
     assert.equal(resHtml.status, 200);
     const htmlText = await resHtml.text();
-    assert.ok(htmlText.includes('MOMO NET MONITORING SYSTEM'));
+    assert.ok(htmlText.includes('ADT Monitoring'));
+    assert.ok(htmlText.includes('id="pon-filter"'));
+    assert.ok(htmlText.includes('Semua PON'));
 
     // Fetch logo PNG
     const resLogo = await fetch('http://127.0.0.1:' + port + '/momo-logo.png');
@@ -299,5 +315,571 @@ test('network-check works before login and returns unreachable message on timeou
     try { nms?.stop(); } catch {}
     await new Promise(r => setTimeout(r, 100));
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('pppoeView scopes multi-router sessions by oltHosts without cross-site collision', () => {
+  const rowSiteA = { index: '1.1', name: 'USER-A', mac: 'AA:BB:CC:DD:EE:01', status: 'Online' };
+  const rowSiteB = { index: '16777473', name: 'USER-B', mac: 'AA:BB:CC:DD:EE:01', status: 'Online' };
+  const devices = [
+    { host: '192.168.0.99', updated: '2026-11-22T10:00:00.000Z', pollFailed: false, rows: [rowSiteA] },
+    { host: '192.168.100.2', updated: '2026-11-22T10:00:00.000Z', pollFailed: false, rows: [rowSiteB] },
+  ];
+  const view = pppoeView(devices, {
+    configured: true,
+    available: true,
+    active: [
+      { mac: 'AABBCCDDEE01', username: 'pppoe-a', address: '10.0.1.10', uptime: '1h', routerId: 'r1', routerName: 'MikroTik Site A', oltHosts: ['192.168.0.99'] },
+      { mac: 'AABBCCDDEE01', username: 'pppoe-b', address: '192.168.100.10', uptime: '2h', routerId: 'r2', routerName: 'MikroTik Site B', oltHosts: ['192.168.100.2'] },
+    ],
+  });
+  const mA = view.match(rowSiteA, '192.168.0.99');
+  const mB = view.match(rowSiteB, '192.168.100.2');
+  assert.equal(mA.state, 'exact');
+  assert.equal(mA.username, 'pppoe-a');
+  assert.equal(mA.routerName, 'MikroTik Site A');
+  assert.equal(mB.state, 'exact');
+  assert.equal(mB.username, 'pppoe-b');
+  assert.equal(mB.routerName, 'MikroTik Site B');
+});
+
+test('multi-mikrotik /api/admin/routers CRUD and HSGQ OLT preset work cleanly', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'momo-multi-'));
+  let nms;
+  try {
+    nms = createNmsServer(dir, { port: 0 });
+    const port = await nms.start();
+    const resSetup = await fetch('http://127.0.0.1:' + port + '/api/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'password123' }),
+    });
+    const cookie = (resSetup.headers.get('set-cookie') || '').split(';')[0];
+
+    const resOlt = await fetch('http://127.0.0.1:' + port + '/api/admin/olts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({
+        action: 'add',
+        name: 'OLT HSGQ Site B',
+        host: '192.168.100.2',
+        community: 'public-test',
+        port: 161,
+        vendor: 'hsgq',
+      }),
+    });
+    assert.equal(resOlt.status, 201);
+    const addedOlt = nms.devices.find(d => d.host === '192.168.100.2');
+    assert.equal(addedOlt.rxDivider, 100);
+    assert.equal(addedOlt.oids.rx, '1.3.6.1.4.1.50224.3.3.3.1.4');
+    assert.equal(addedOlt.oids.mac, '1.3.6.1.4.1.50224.3.3.2.1.7');
+
+    const addR1 = await fetch('http://127.0.0.1:' + port + '/api/admin/routers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({
+        action: 'add',
+        name: 'MikroTik Site A',
+        url: 'http://10.0.1.2:808',
+        username: 'admin',
+        password: 'secret1',
+        oltHosts: ['192.168.0.99'],
+      }),
+    });
+    assert.equal(addR1.status, 201);
+
+    const addR2 = await fetch('http://127.0.0.1:' + port + '/api/admin/routers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({
+        action: 'add',
+        name: 'MikroTik Site B ROS6',
+        url: 'api://192.168.100.1:8728',
+        username: 'admin',
+        password: 'secret2',
+        oltHosts: ['192.168.100.2'],
+      }),
+    });
+    assert.equal(addR2.status, 201);
+
+    const badProto = await fetch('http://127.0.0.1:' + port + '/api/admin/routers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({
+        action: 'add',
+        name: 'Bad Proto',
+        url: 'ftp://192.168.100.1',
+        username: 'admin',
+        password: 'x',
+      }),
+    });
+    assert.equal(badProto.status, 400);
+
+    const listRes = await fetch('http://127.0.0.1:' + port + '/api/admin/routers', {
+      headers: { Cookie: cookie },
+    });
+    assert.equal(listRes.status, 200);
+    const routers = await listRes.json();
+    assert.equal(routers.length, 2);
+    assert.equal(routers[0].password, undefined);
+    assert.equal(routers[1].name, 'MikroTik Site B ROS6');
+    assert.equal(routers[1].url, 'api://192.168.100.1:8728');
+
+    const delR2 = await fetch('http://127.0.0.1:' + port + '/api/admin/routers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ action: 'remove', id: routers[1].id }),
+    });
+    assert.equal(delR2.status, 200);
+    const listRes2 = await fetch('http://127.0.0.1:' + port + '/api/admin/routers', {
+      headers: { Cookie: cookie },
+    });
+    const routers2 = await listRes2.json();
+    assert.equal(routers2.length, 1);
+  } finally {
+    try { nms?.stop(); } catch {}
+    await new Promise(r => setTimeout(r, 100));
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+function createMockRosApiServer(options = {}) {
+  const { legacyChallenge = false, rejectBadAuth = true } = options;
+  const challengeHex = '0123456789abcdef0123456789abcdef';
+  let loginCount = 0;
+  const server = net.createServer((socket) => {
+    let buf = Buffer.alloc(0);
+    let currentWords = [];
+    const readLength = (b, off) => {
+      if (off >= b.length) return null;
+      const c0 = b[off];
+      if ((c0 & 0x80) === 0) return [c0, 1];
+      if ((c0 & 0xC0) === 0x80) {
+        if (off + 1 >= b.length) return null;
+        return [((c0 & 0x3F) << 8) | b[off + 1], 2];
+      }
+      if ((c0 & 0xE0) === 0xC0) {
+        if (off + 2 >= b.length) return null;
+        return [((c0 & 0x1F) << 16) | (b[off + 1] << 8) | b[off + 2], 3];
+      }
+      if ((c0 & 0xF0) === 0xE0) {
+        if (off + 3 >= b.length) return null;
+        return [((c0 & 0x0F) << 24) | (b[off + 1] << 16) | (b[off + 2] << 8) | b[off + 3], 4];
+      }
+      if (off + 4 >= b.length) return null;
+      return [(b[off + 1] << 24) | (b[off + 2] << 16) | (b[off + 3] << 8) | b[off + 4], 5];
+    };
+    const handleSentence = (words) => {
+      const cmd = words[0];
+      const attrs = Object.fromEntries(words.slice(1).filter(w => w.startsWith('=')).map(w => {
+        const idx = w.indexOf('=', 1);
+        return idx > 0 ? [w.slice(1, idx), w.slice(idx + 1)] : [w.slice(1), ''];
+      }));
+      if (cmd === '/login') {
+        if (legacyChallenge && !attrs.response) {
+          socket.write(encodeSentence(['!done', '=ret=' + challengeHex]));
+          return;
+        }
+        if (legacyChallenge && attrs.response) {
+          const expected = '00' + crypto.createHash('md5').update(
+            Buffer.concat([Buffer.from([0]), Buffer.from('secret', 'utf8'), Buffer.from(challengeHex, 'hex')])
+          ).digest('hex');
+          if (attrs.name === 'admin' && attrs.response === expected) {
+            loginCount++;
+            socket.write(encodeSentence(['!done']));
+          } else {
+            socket.write(encodeSentence(['!trap', '=message=invalid user name or password (6)']));
+            socket.write(encodeSentence(['!done']));
+          }
+          return;
+        }
+        if (!rejectBadAuth || (attrs.name === 'admin' && attrs.password === 'secret')) {
+          loginCount++;
+          socket.write(encodeSentence(['!done']));
+        } else {
+          socket.write(encodeSentence(['!trap', '=message=invalid user name or password (6)']));
+          socket.write(encodeSentence(['!done']));
+        }
+      } else if (cmd === '/ppp/active/print') {
+        socket.write(encodeSentence(['!re', '=.id=*1', '=name=user1', '=caller-id=44:13:D0:2B:12:D5', '=service=pppoe', '=address=10.1.0.2', '=uptime=1h']));
+        socket.write(encodeSentence(['!done']));
+      } else if (cmd === '/system/identity/print') {
+        socket.write(encodeSentence(['!re', '=name=MockMikroTik']));
+        socket.write(encodeSentence(['!done']));
+      } else {
+        socket.write(encodeSentence(['!trap', '=message=unknown command']));
+        socket.write(encodeSentence(['!done']));
+      }
+    };
+    socket.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      while (true) {
+        const res = readLength(buf, 0);
+        if (!res) break;
+        const [len, hdr] = res;
+        if (len === 0) {
+          buf = buf.subarray(hdr);
+          const sent = currentWords;
+          currentWords = [];
+          handleSentence(sent);
+          continue;
+        }
+        if (buf.length < hdr + len) break;
+        currentWords.push(buf.subarray(hdr, hdr + len).toString('utf8'));
+        buf = buf.subarray(hdr + len);
+      }
+    });
+  });
+  server.getLoginCount = () => loginCount;
+  return server;
+}
+
+test('ros-api client reuses persistent login session across polls, handles legacy MD5, and rejects bad auth', async () => {
+  // Multi-byte length encoding checks
+  assert.equal(encodeWord('abc').subarray(0, 1)[0], 3);
+  const medium = 'x'.repeat(200);
+  const encMed = encodeWord(medium);
+  assert.equal(encMed[0], 0x80);
+  assert.equal(encMed[1], 200);
+
+  // ROS 6.43+ login + multiple polls reuse ONE persistent session without re-logging in
+  const srv = createMockRosApiServer({ legacyChallenge: false });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  try {
+    for (let i = 0; i < 3; i++) {
+      const [records] = await runRosApiCommands('127.0.0.1', port, 'admin', 'secret', [
+        ['/ppp/active/print', '=.proplist=.id,name,caller-id'],
+      ]);
+      assert.equal(records.length, 1);
+      assert.equal(records[0].name, 'user1');
+      assert.equal(records[0]['caller-id'], '44:13:D0:2B:12:D5');
+    }
+    assert.equal(await probeRosApi('127.0.0.1', port, 'admin', 'secret', 2000), true);
+    assert.equal(srv.getLoginCount(), 1);
+
+    await assert.rejects(
+      runRosApiCommands('127.0.0.1', port, 'admin', 'wrongpass', [['/ppp/active/print']]),
+      /invalid user name or password/i
+    );
+  } finally {
+    closeAllRosApiSessions();
+    srv.closeAllConnections?.();
+    srv.close();
+  }
+
+  // Pre-6.43 legacy MD5 challenge-response login
+  const srvLegacy = createMockRosApiServer({ legacyChallenge: true });
+  await new Promise(r => srvLegacy.listen(0, '127.0.0.1', r));
+  const legacyPort = srvLegacy.address().port;
+  try {
+    const [records] = await runRosApiCommands('127.0.0.1', legacyPort, 'admin', 'secret', [
+      ['/ppp/active/print'],
+    ]);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].address, '10.1.0.2');
+    assert.equal(srvLegacy.getLoginCount(), 1);
+  } finally {
+    closeAllRosApiSessions();
+    srvLegacy.closeAllConnections?.();
+    srvLegacy.close();
+  }
+});
+
+test('HSGQ-E04R direct ONU reboot, delete, MAC mismatch rejection, and logout work cleanly', async () => {
+  assert.deepEqual(decodeHsgqIndex('16777473'), { portId: 1, onuId: 1 });
+  assert.deepEqual(decodeHsgqIndex('16777730'), { portId: 2, onuId: 2 });
+  assert.equal(decodeHsgqIndex('1.1.1'), null);
+  assert.equal(decodeHsgqIndex('0'), null);
+  assert.equal(decodeHsgqIndex('abc'), null);
+
+  assert.equal(isHsgqDevice({ vendor: 'hsgq' }), true);
+  assert.equal(isHsgqDevice({ oids: { rx: '1.3.6.1.4.1.50224.3.3.3.1.4' } }), true);
+  assert.equal(isHsgqDevice({ vendor: 'hioso' }), false);
+
+  assert.equal(canRestart({ host: '192.168.100.2', vendor: 'hsgq', adminUser: 'root', adminPassword: 'secret' }, '127.0.0.1'), true);
+  assert.equal(canRestart({ host: '192.168.100.2', vendor: 'hsgq' }, '127.0.0.1'), false);
+
+  const actionsCalled = [];
+  const validToken = 'tok-hsgq-test-123';
+  const expectedKey = crypto.createHash('md5').update('root:admin').digest('hex');
+
+  const hsgqServer = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const body = raw ? JSON.parse(raw) : null;
+
+    if (req.url === '/userlogin?form=login' && req.method === 'POST') {
+      if (body?.param?.name === 'root' && body?.param?.key === expectedKey) {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'x-token': validToken });
+        res.end(JSON.stringify({ code: 1, message: 'success' }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ code: 0, message: 'bad auth' }));
+      }
+      return;
+    }
+
+    if (req.headers['x-token'] !== validToken) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ code: 0, message: 'unauthorized' }));
+      return;
+    }
+
+    if (req.url === '/onutable' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        code: 1,
+        data: [
+          { port_id: 1, onu_id: 1, onu_name: 'ZIBIL', macaddr: '44:13:d0:2b:12:d5', status: 'Online' },
+          { port_id: 1, onu_id: 2, onu_name: 'OFFLINE-CPE', macaddr: '44:13:d0:2b:12:d6', status: 'Offline' },
+        ],
+      }));
+      return;
+    }
+
+    if (req.url === '/onumgmt?form=config' && req.method === 'POST') {
+      actionsCalled.push({ url: req.url, body });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ code: 1, message: 'success' }));
+      return;
+    }
+
+    if (req.url === '/onu_allow_list?form=onucfg' && req.method === 'POST') {
+      actionsCalled.push({ url: req.url, body });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ code: 1, message: 'success' }));
+      return;
+    }
+
+    if (req.url === '/userlogin?form=logout' && req.method === 'POST') {
+      actionsCalled.push({ url: req.url, body });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ code: 1, message: 'success' }));
+      return;
+    }
+
+    res.writeHead(404).end();
+  });
+
+  await new Promise(r => hsgqServer.listen(0, '127.0.0.1', r));
+  const mockOltPort = hsgqServer.address().port;
+
+  const hsgqDevice = {
+    name: 'OLT HSGQ',
+    host: '127.0.0.1',
+    webPort: mockOltPort,
+    vendor: 'hsgq',
+    adminUser: 'root',
+    adminPassword: 'admin',
+    updated: new Date().toISOString(),
+    rows: [
+      { index: '16777473', name: 'ZIBIL', mac: '44:13:D0:2B:12:D5', status: 'Online', rx: -15.5 },
+      { index: '16777474', name: 'OFFLINE-CPE', mac: '44:13:D0:2B:12:D6', status: 'Offline', rx: null },
+      { index: '16777475', name: 'MISMATCH-CPE', mac: 'AA:BB:CC:DD:EE:FF', status: 'Online', rx: -20.0 },
+    ],
+  };
+  const devices = [hsgqDevice];
+
+  const proxyServer = http.createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    const deleting = url.pathname === '/api/onu/delete';
+    await restartRequest(req, res, devices, '127.0.0.1', proxyServer.address().port, {
+      begin: () => 1,
+      finish: () => {},
+      watch: () => {},
+      removed: (dev, mac, index) => {
+        dev.rows = dev.rows.filter(r => r.index !== index || r.mac !== mac);
+      },
+    }, deleting);
+  });
+
+  await new Promise(r => proxyServer.listen(0, '127.0.0.1', r));
+  const srvPort = proxyServer.address().port;
+
+  try {
+    const callRestart = (path, payload) => fetch('http://127.0.0.1:' + srvPort + path, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Host: '127.0.0.1:' + srvPort,
+        Origin: 'http://127.0.0.1:' + srvPort,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    // 1. Verify online ONU
+    const vRes = await callRestart('/api/onu/restart', {
+      host: '127.0.0.1', index: '16777473', mac: '44:13:D0:2B:12:D5', action: 'verify',
+    });
+    assert.equal(vRes.status, 200);
+    assert.match((await vRes.json()).message, /PON 1:1/);
+
+    // 2. Reboot online ONU
+    const rRes = await callRestart('/api/onu/restart', {
+      host: '127.0.0.1', index: '16777473', mac: '44:13:D0:2B:12:D5', action: 'reboot',
+    });
+    assert.equal(rRes.status, 200);
+    assert.match((await rRes.json()).message, /reboot.*PON 1:1/i);
+    assert.ok(actionsCalled.some(a =>
+      a.url === '/onumgmt?form=config' &&
+      a.body.method === 'set' &&
+      a.body.param.port_id === 1 &&
+      a.body.param.onu_id === 1 &&
+      a.body.param.flags === 1 &&
+      a.body.param.fec_mode === 1
+    ));
+    assert.ok(actionsCalled.some(a => a.url === '/userlogin?form=logout'));
+
+    // 3. Delete offline ONU
+    const dRes = await callRestart('/api/onu/delete', {
+      host: '127.0.0.1',
+      index: '16777474',
+      mac: '44:13:D0:2B:12:D6',
+      action: 'delete',
+      confirmation: '44:13:D0:2B:12:D6',
+    });
+    assert.equal(dRes.status, 200);
+    assert.match((await dRes.json()).message, /PON 1:2.*terhapus/i);
+    assert.ok(actionsCalled.some(a =>
+      a.url === '/onu_allow_list?form=onucfg' &&
+      a.body.method === 'delete' &&
+      a.body.param.port_id === 1 &&
+      a.body.param.onu_id === 2 &&
+      a.body.param.macaddr === '44:13:d0:2b:12:d6'
+    ));
+    assert.equal(hsgqDevice.rows.some(r => r.mac === '44:13:D0:2B:12:D6'), false);
+
+    // 4. Reject MAC mismatch on live OLT before sending any config change
+    const beforeCount = actionsCalled.filter(a => a.url !== '/userlogin?form=logout').length;
+    const mRes = await callRestart('/api/onu/restart', {
+      host: '127.0.0.1', index: '16777475', mac: 'AA:BB:CC:DD:EE:FF', action: 'reboot',
+    });
+    assert.equal(mRes.status, 409);
+    assert.match((await mRes.json()).message, /MAC dan Port\/ONU tidak cocok/i);
+    const afterCount = actionsCalled.filter(a => a.url !== '/userlogin?form=logout').length;
+    assert.equal(afterCount, beforeCount);
+  } finally {
+    proxyServer.closeAllConnections?.();
+    proxyServer.close();
+    hsgqServer.closeAllConnections?.();
+    hsgqServer.close();
+  }
+});
+
+test('HiOSO non-hardcoded IP auto-detects 3-segment PON 0/1/x and reboots ONU', async () => {
+  const posted = [];
+  const authHeader = 'Basic ' + Buffer.from('admin:admin').toString('base64');
+  const hiosoServer = http.createServer(async (req, res) => {
+    if (req.headers.authorization !== authHeader) {
+      res.writeHead(401).end('Unauthorized');
+      return;
+    }
+    const url = new URL(req.url, 'http://127.0.0.1');
+    if (url.pathname === '/onuOverview.asp' && url.searchParams.get('oltponno') === '0/1') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(`<script>var ponOnuTable = new Array(
+  '0/1/1:1', 'ANDRE', 'B4:E4:6B:6F:07:E7', 'Up',
+  '0/1/2:1', 'BUDI', 'B4:E4:6B:6F:9C:E8', 'Up'
+);</script>`);
+      return;
+    }
+    if (url.pathname === '/onuConfigOnuList.asp') {
+      const pon = url.searchParams.get('oltponno');
+      const rows = pon === '0/1/1'
+        ? "  '0/1/1:1', 'ANDRE', 'B4:E4:6B:6F:07:E7', 'Up'\n"
+        : pon === '0/1/2'
+          ? "  '0/1/2:1', 'BUDI', 'B4:E4:6B:6F:9C:E8', 'Up'\n"
+          : '';
+      if (pon === '0/1/3' || pon === '0/1/4') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(`<script>var ponOnuTable = new Array(\n);</script>`);
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(`<script>var ponOnuTable = new Array(\n${rows});</script>`);
+      return;
+    }
+    if (url.pathname === '/onuConfig.asp') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(`<script>
+var onuinfo = new Array('0/1/1:0', 'ANDRE', 'b4:e4:6b:6f:07:e7', 'Up');
+var onuno = '0/1/1:1';
+onuForm.onuId.value = onuno;
+</script>
+<form action="/goform/setOnu" method="post">
+<select name="onuOperation"><option value="rebootOp">Reboot</option></select>
+</form>`);
+      return;
+    }
+    if (url.pathname === '/goform/setOnu' && req.method === 'POST') {
+      let body = '';
+      for await (const c of req) body += c;
+      posted.push(body);
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<html><body>Configure Success!</body></html>');
+      return;
+    }
+    res.writeHead(404).end();
+  });
+
+  await new Promise(r => hiosoServer.listen(0, '127.0.0.1', r));
+  const mockPort = hiosoServer.address().port;
+
+  const hiosoDevice = {
+    name: 'OLT KOTOBANGON',
+    host: '127.0.0.1',
+    webPort: mockPort,
+    vendor: 'hioso',
+    adminUser: 'admin',
+    adminPassword: 'admin',
+    updated: new Date().toISOString(),
+    rows: [
+      { index: '1.1.1', name: 'ANDRE', mac: 'B4:E4:6B:6F:07:E7', status: 'Online', rx: -18.2 },
+    ],
+  };
+
+  const proxyServer = http.createServer(async (req, res) => {
+    await restartRequest(req, res, [hiosoDevice], '127.0.0.1', proxyServer.address().port, {
+      begin: () => 1,
+      finish: () => {},
+      watch: () => {},
+    }, false);
+  });
+  await new Promise(r => proxyServer.listen(0, '127.0.0.1', r));
+  const srvPort = proxyServer.address().port;
+
+  try {
+    const callRestart = (payload) => fetch('http://127.0.0.1:' + srvPort + '/api/onu/restart', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Host: '127.0.0.1:' + srvPort,
+        Origin: 'http://127.0.0.1:' + srvPort,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const vRes = await callRestart({
+      host: '127.0.0.1', index: '1.1.1', mac: 'B4:E4:6B:6F:07:E7', action: 'verify',
+    });
+    assert.equal(vRes.status, 200);
+    assert.match((await vRes.json()).message, /0\/1\/1:1/);
+
+    const rRes = await callRestart({
+      host: '127.0.0.1', index: '1.1.1', mac: 'B4:E4:6B:6F:07:E7', action: 'reboot',
+    });
+    assert.equal(rRes.status, 200);
+    assert.match((await rRes.json()).message, /perintah reboot/i);
+    assert.equal(posted.length, 1);
+    const params = new URLSearchParams(posted[0]);
+    assert.equal(params.get('onuId'), '0/1/1:1');
+    assert.equal(params.get('onuName'), 'ANDRE');
+    assert.equal(params.get('onuOperation'), 'rebootOp');
+  } finally {
+    proxyServer.closeAllConnections?.();
+    proxyServer.close();
+    hiosoServer.closeAllConnections?.();
+    hiosoServer.close();
   }
 });

@@ -1,12 +1,13 @@
 Add-Type -AssemblyName System.Drawing
 
-$srcPath = Join-Path $PSScriptRoot "..\..\momo-logo.png"
+$srcPath = Join-Path $PSScriptRoot "..\..\ADT Digital Tech Logo.png"
 if (-not (Test-Path $srcPath)) {
-    $srcPath = Join-Path $PSScriptRoot "..\src\assets\momo-logo.png"
+    $srcPath = Join-Path $PSScriptRoot "..\src\assets\adt-logo.png"
 }
 
 $srcImage = [System.Drawing.Image]::FromFile($srcPath)
 $resDir = Join-Path $PSScriptRoot "..\android\app\src\main\res"
+$webLogoPath = Join-Path $PSScriptRoot "..\src\assets\adt-logo.png"
 
 $densities = @(
     @{ name = "mipmap-mdpi";    iconSize = 48;  fgSize = 108 },
@@ -61,5 +62,8 @@ foreach ($d in $densities) {
     Write-Output "Generated icons in $($d.name) (icon: $($d.iconSize)x$($d.iconSize), fg: $($d.fgSize)x$($d.fgSize))"
 }
 
+Resize-Image $srcImage 384 384 $webLogoPath $false
+Write-Output "Generated web logo: $webLogoPath"
+
 $srcImage.Dispose()
-Write-Output "All Momo Net app icons generated successfully!"
+Write-Output "All ADT Monitoring app icons generated successfully!"

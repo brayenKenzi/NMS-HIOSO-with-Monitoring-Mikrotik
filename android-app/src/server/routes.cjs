@@ -202,7 +202,56 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
       return false;
     }
 
-    // MikroTik Router configuration
+    // MikroTik Routers (Multi-Site Admin)
+    if (path === '/api/admin/routers') {
+      if (user.role !== 'admin') {
+        json(res, 403, { message: 'Pengaturan MikroTik khusus admin.' });
+        return false;
+      }
+      if (req.method === 'GET') {
+        json(res, 200, routerModule.getRouterConfigs());
+        return false;
+      }
+      if (post) {
+        let data;
+        try { data = await body(req); } catch {
+          json(res, 400, { message: 'Data MikroTik tidak valid.' });
+          return false;
+        }
+        const current = store.getRouterConfigs();
+        if (data?.action === 'remove') {
+          const next = current.filter(r => r.id !== data.id);
+          const saved = store.setRouterConfigs(next);
+          routerModule.updateRouterConfigs(saved);
+          void routerModule.pollPppoe(true);
+          json(res, 200, { message: 'MikroTik dihapus.' });
+          return false;
+        }
+        const name = typeof data?.name === 'string' ? data.name.trim() : '';
+        const url = typeof data?.url === 'string' ? data.url.trim() : '';
+        const username = typeof data?.username === 'string' ? data.username.trim() : '';
+        const password = typeof data?.password === 'string' ? data.password : '';
+        const oltHosts = Array.isArray(data?.oltHosts) ? data.oltHosts.filter(Boolean) : [];
+        let validUrl = false;
+        try {
+          const u = new URL(url);
+          validUrl = ['http:', 'https:', 'api:'].includes(u.protocol);
+        } catch {}
+        if (!name || !validUrl || !username || !password) {
+          json(res, 400, { message: 'Isi Nama Site, URL MikroTik (http/https/api), Username, dan Password.' });
+          return false;
+        }
+        const saved = store.setRouterConfigs([...current, { name, url, username, password, oltHosts }]);
+        routerModule.updateRouterConfigs(saved);
+        void routerModule.pollPppoe(true);
+        json(res, 201, { message: 'MikroTik ' + name + ' berhasil ditambahkan.' });
+        return false;
+      }
+      json(res, 405, { message: 'Metode tidak didukung.' });
+      return false;
+    }
+
+    // MikroTik Router configuration (legacy single compatibility)
     if (path === '/api/admin/router') {
       if (user.role !== 'admin') {
         json(res, 403, { message: 'Pengaturan MikroTik khusus admin.' });
@@ -218,7 +267,7 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
         }
         store.setRouterConfig(data);
         routerModule.updateRouterConfig(data);
-        void routerModule.pollPppoe();
+        void routerModule.pollPppoe(true);
         json(res, 200, { message: 'Konfigurasi MikroTik berhasil disimpan.' });
       } else {
         json(res, 405, { message: 'Metode tidak didukung.' });
@@ -251,6 +300,7 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
       json(res, 200, {
         olts: olts.listFull?.() || olts.list(),
         router: store.getRouterConfig(),
+        routers: store.getRouterConfigs(),
       });
       return false;
     }
@@ -268,10 +318,14 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
       if (data.olts && Array.isArray(data.olts)) {
         olts.importAll?.(data.olts);
       }
-      if (data.router) {
+      if (Array.isArray(data.routers)) {
+        const saved = store.setRouterConfigs(data.routers);
+        routerModule.updateRouterConfigs(saved);
+        void routerModule.pollPppoe(true);
+      } else if (data.router) {
         store.setRouterConfig(data.router);
         routerModule.updateRouterConfig(data.router);
-        void routerModule.pollPppoe();
+        void routerModule.pollPppoe(true);
       }
       json(res, 200, { message: 'Konfigurasi berhasil diimpor.' });
       return false;

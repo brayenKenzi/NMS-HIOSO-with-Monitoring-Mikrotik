@@ -210,18 +210,41 @@ const nmsOperations = (() => {
   });
 
   async function showRouterManagement() {
-    const target = open('Pengaturan MikroTik PPPoE');
+    const target = open('Pengaturan Multi-MikroTik (Multi-Site)');
     const back = element('button', 'Kembali ke Admin', 'restart-button');
     back.type = 'button';
     back.addEventListener('click', () => byId('admin-menu').click());
 
     const form = element('form');
-    const urlField = element('label', 'Origin URL MikroTik REST');
+    const nameField = element('label', 'Nama Site / Router');
+    const nameInput = element('input');
+    nameInput.name = 'name';
+    nameInput.placeholder = 'Contoh: MikroTik Site HSGQ';
+    nameInput.maxLength = 60;
+    nameInput.required = true;
+    nameField.append(nameInput);
+
+    const protoField = element('label', 'Mode Koneksi / Protokol');
+    const protoSelect = element('select');
+    protoSelect.name = 'protocol';
+    protoSelect.add(new Option('REST HTTP (RouterOS v7)', 'http'));
+    protoSelect.add(new Option('MikroTik API Port 8728 (ROS v6 & v7)', 'api'));
+    protoField.append(protoSelect);
+
+    const urlField = element('label', 'Alamat MikroTik (URL atau IP)');
     const urlInput = element('input');
     urlInput.name = 'url';
     urlInput.placeholder = 'http://10.0.1.2:808';
     urlInput.required = true;
     urlField.append(urlInput);
+
+    const hint = element('p', 'Tip ROS 6 (RB750Gr3 dll.): aktifkan service "api" (port 8728) di WinBox → IP → Services.');
+    hint.style.fontSize = '12px';
+    hint.style.color = 'var(--muted)';
+
+    protoSelect.addEventListener('change', () => {
+      urlInput.placeholder = protoSelect.value === 'api' ? 'api://10.25.0.1:8728 (atau cukup 10.25.0.1)' : 'http://10.0.1.2:808';
+    });
 
     const userField = element('label', 'Username REST');
     const userInput = element('input');
@@ -237,23 +260,77 @@ const nmsOperations = (() => {
     passInput.required = true;
     passField.append(passInput);
 
-    const save = element('button', 'Simpan Konfigurasi', 'restart-button');
+    const oltCheckWrap = element('div');
+    oltCheckWrap.style.margin = '8px 0';
+    const save = element('button', 'Tambah MikroTik', 'restart-button');
     const message = element('p');
     message.setAttribute('role', 'status');
     const statusBox = element('div');
 
-    form.append(urlField, userField, passField, save);
+    form.append(nameField, protoField, urlField, hint, userField, passField, oltCheckWrap, save);
 
-    async function loadRouter() {
+    async function loadOltChoices() {
       try {
-        const config = await api('/api/admin/router');
-        if (config.url) urlInput.value = config.url;
-        if (config.username) userInput.value = config.username;
-        statusBox.replaceChildren(element('p', [
-          config.configured ? 'Status: Dikonfigurasi' : 'Status: Belum dikonfigurasi',
-          config.activeSessions != null ? config.activeSessions + ' sesi PPPoE aktif' : '',
-          config.error ? 'Error: ' + config.error : '',
-        ].filter(Boolean).join(' · ')));
+        const olts = await api('/api/admin/olts');
+        const wrap = element('div');
+        wrap.append(element('p', 'OLT Terkait di Site ini (kosongkan semua = cocokkan dengan semua OLT):'));
+        for (const o of olts) {
+          const lbl = element('label');
+          lbl.style.display = 'flex';
+          lbl.style.alignItems = 'center';
+          lbl.style.gap = '8px';
+          const cb = element('input');
+          cb.type = 'checkbox';
+          cb.name = 'oltHost';
+          cb.value = o.host;
+          cb.style.width = 'auto';
+          cb.style.minHeight = 'auto';
+          lbl.append(cb, element('span', o.name + ' (' + o.host + ')'));
+          wrap.append(lbl);
+        }
+        oltCheckWrap.replaceChildren(wrap);
+      } catch {}
+    }
+
+    async function loadRouters() {
+      try {
+        const list = await api('/api/admin/routers');
+        if (!Array.isArray(list) || !list.length) {
+          statusBox.replaceChildren(element('p', 'Belum ada MikroTik terdaftar.'));
+          return;
+        }
+        const ul = element('ul', null, 'ops-items');
+        for (const r of list) {
+          const li = element('li');
+          const stateText = r.error ? 'Error: ' + r.error
+            : r.available ? 'Aktif · ' + r.activeSessions + ' sesi PPPoE'
+            : 'Menunggu polling (' + (r.activeSessions ?? 0) + ' sesi)';
+          const boundText = Array.isArray(r.oltHosts) && r.oltHosts.length
+            ? 'OLT: ' + r.oltHosts.join(', ')
+            : 'OLT: Semua';
+          li.append(
+            element('strong', r.name),
+            element('p', r.url + ' · ' + stateText),
+            element('p', boundText)
+          );
+          const del = element('button', 'Hapus MikroTik', 'restart-button delete-onu');
+          del.type = 'button';
+          del.onclick = async () => {
+            if (!window.confirm('Hapus ' + r.name + ' (' + r.url + ')?')) return;
+            del.disabled = true;
+            try {
+              const res = await api('/api/admin/routers', { action: 'remove', id: r.id });
+              message.textContent = res.message;
+              await loadRouters();
+            } catch (err) {
+              message.textContent = err.message;
+              del.disabled = false;
+            }
+          };
+          li.append(del);
+          ul.append(li);
+        }
+        statusBox.replaceChildren(ul);
       } catch (err) {
         message.textContent = err.message;
       }
@@ -262,11 +339,31 @@ const nmsOperations = (() => {
     form.addEventListener('submit', async event => {
       event.preventDefault();
       save.disabled = true;
-      message.textContent = 'Menyimpan...';
+      message.textContent = 'Menyimpan MikroTik...';
       try {
-        const res = await api('/api/admin/router', Object.fromEntries(new FormData(form)));
+        const fd = new FormData(form);
+        const oltHosts = fd.getAll('oltHost');
+        let rawUrl = String(fd.get('url') || '').trim();
+        const proto = String(fd.get('protocol') || 'http');
+        if (!/^[a-z]+:\/\//i.test(rawUrl)) {
+          if (proto === 'api') {
+            rawUrl = 'api://' + rawUrl + (rawUrl.includes(':') ? '' : ':8728');
+          } else {
+            rawUrl = 'http://' + rawUrl;
+          }
+        }
+        const payload = {
+          action: 'add',
+          name: fd.get('name'),
+          url: rawUrl,
+          username: fd.get('username'),
+          password: fd.get('password'),
+          oltHosts,
+        };
+        const res = await api('/api/admin/routers', payload);
         message.textContent = res.message;
-        await loadRouter();
+        form.reset();
+        await loadRouters();
       } catch (err) {
         message.textContent = err.message;
       } finally {
@@ -274,8 +371,8 @@ const nmsOperations = (() => {
       }
     });
 
-    target.replaceChildren(back, form, message, element('h3', 'Status Trafik MikroTik'), statusBox);
-    await loadRouter();
+    target.replaceChildren(back, form, message, element('h3', 'Daftar MikroTik Terdaftar'), statusBox);
+    await Promise.all([loadOltChoices(), loadRouters()]);
   }
 
   async function showBackupManagement() {
@@ -380,6 +477,13 @@ const nmsOperations = (() => {
     const title = 'Manajemen OLT';
     const target = open(title);
     const form = element('form');
+    const vendorField = element('label', 'Tipe OLT');
+    const vendorSelect = element('select');
+    vendorSelect.name = 'vendor';
+    vendorSelect.add(new Option('HiOSO (EPON)', 'hioso'));
+    vendorSelect.add(new Option('HSGQ-E04R (EPON)', 'hsgq'));
+    vendorField.append(vendorSelect);
+    form.append(vendorField);
     for (const [name, label, type, maxLength, required] of [
       ['name', 'Nama OLT', 'text', 80, true],
       ['host', 'Alamat IPv4', 'text', 15, true],
@@ -416,8 +520,9 @@ const nmsOperations = (() => {
         const entries = element('ul', null, 'ops-items');
         for (const device of devices) {
           const item = element('li');
+          const vendorTag = device.vendor === 'hsgq' ? 'HSGQ' : 'HiOSO';
           const state = device.polling ? 'Memeriksa SNMP…' : device.error ?? (device.updated ? 'SNMP aktif' : 'Menunggu polling');
-          item.append(element('strong', device.name), element('p', device.host + ':' + device.port + ' · ' + state));
+          item.append(element('strong', device.name + ' [' + vendorTag + ']'), element('p', device.host + ':' + device.port + ' · ' + state));
           const remove = element('button', 'Hapus OLT', 'restart-button');
           remove.type = 'button';
           remove.setAttribute('aria-label', 'Hapus OLT ' + device.name);

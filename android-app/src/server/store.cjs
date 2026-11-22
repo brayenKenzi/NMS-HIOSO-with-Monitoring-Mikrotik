@@ -226,14 +226,75 @@ function openStore(path) {
     try { return JSON.parse(raw.value); } catch { return null; }
   }
 
+  function normalizeRouterList(list) {
+    if (!Array.isArray(list)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const item of list) {
+      if (!item || !item.url || !item.username || !item.password) continue;
+      let id = String(item.id || '').trim();
+      if (!id || seen.has(id)) id = 'r-' + (out.length + 1) + '-' + randomBytes(3).toString('hex');
+      seen.add(id);
+      out.push({
+        id,
+        name: String(item.name || 'MikroTik ' + (out.length + 1)).trim().slice(0, 60),
+        url: String(item.url).trim(),
+        username: String(item.username),
+        password: String(item.password),
+        oltHosts: Array.isArray(item.oltHosts) ? item.oltHosts.filter(Boolean) : [],
+      });
+    }
+    return out;
+  }
+
+  function getRouterConfigs() {
+    const raw = getSetting.get('router_configs');
+    if (raw?.value) {
+      try {
+        const parsed = JSON.parse(raw.value);
+        if (Array.isArray(parsed)) return normalizeRouterList(parsed);
+      } catch {}
+    }
+    const legacy = getRouterConfig();
+    if (legacy && legacy.url && legacy.username && legacy.password) {
+      return [{
+        id: 'default',
+        name: legacy.name || 'MikroTik Utama',
+        url: legacy.url,
+        username: legacy.username,
+        password: legacy.password,
+        oltHosts: Array.isArray(legacy.oltHosts) ? legacy.oltHosts : [],
+      }];
+    }
+    return [];
+  }
+
+  function setRouterConfigs(list) {
+    const clean = normalizeRouterList(list);
+    setSetting.run('router_configs', JSON.stringify(clean));
+    if (clean[0]) {
+      setSetting.run('router_config', JSON.stringify(clean[0]));
+    } else {
+      sql("DELETE FROM settings WHERE key='router_config'").run();
+    }
+    void supabase.setSetting('router_configs', clean).catch(e => console.warn('Supabase routers sync:', e.message));
+    void supabase.setSetting('router_config', clean[0] || null).catch(e => console.warn('Supabase router sync:', e.message));
+    return clean;
+  }
+
   function setRouterConfig(config) {
     if (!config) {
-      sql("DELETE FROM settings WHERE key='router_config'").run();
-      void supabase.setSetting('router_config', null).catch(e => console.warn('Supabase router sync:', e.message));
+      setRouterConfigs([]);
       return;
     }
-    setSetting.run('router_config', JSON.stringify(config));
-    void supabase.setSetting('router_config', config).catch(e => console.warn('Supabase router sync:', e.message));
+    setRouterConfigs([{
+      id: config.id || 'default',
+      name: config.name || 'MikroTik Utama',
+      url: config.url,
+      username: config.username,
+      password: config.password,
+      oltHosts: Array.isArray(config.oltHosts) ? config.oltHosts : [],
+    }]);
   }
 
   function session(req) {
@@ -337,6 +398,10 @@ function openStore(path) {
       if (cloudRouter && cloudRouter.url) {
         setSetting.run('router_config', JSON.stringify(cloudRouter));
       }
+      const cloudRouters = await supabase.getSetting('router_configs');
+      if (Array.isArray(cloudRouters)) {
+        setSetting.run('router_configs', JSON.stringify(normalizeRouterList(cloudRouters)));
+      }
     } catch (err) {
       console.warn('Sync cloud to local store skipped/offline:', err.message);
     }
@@ -347,7 +412,7 @@ function openStore(path) {
 
   return {
     hasAdmin, createUser, updateUserPassword, deleteUser, login, session, logout, recordPoll, recordRecovery, sample, rxBaselineMap,
-    hasPin, setPin, loginPin, getRouterConfig, setRouterConfig, syncFromCloud,
+    hasPin, setPin, loginPin, getRouterConfig, setRouterConfig, getRouterConfigs, setRouterConfigs, syncFromCloud,
     saveOltCache, loadOltCache,
     onuState: (host, index, mac) => getOnuState.get(host, index, mac) ?? null,
     retireOlt(host) {

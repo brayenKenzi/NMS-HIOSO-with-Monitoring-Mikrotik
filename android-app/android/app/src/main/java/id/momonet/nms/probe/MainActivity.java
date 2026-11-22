@@ -90,10 +90,10 @@ public class MainActivity extends BridgeActivity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
-                "Momo Net Alarm Jaringan",
+                "ADT Monitoring Alarm Jaringan",
                 NotificationManager.IMPORTANCE_HIGH
             );
-            channel.setDescription("Notifikasi gangguan OLT dan pelanggan offline Momo Net");
+            channel.setDescription("Notifikasi gangguan OLT dan pelanggan offline ADT Monitoring");
             channel.enableVibration(true);
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {

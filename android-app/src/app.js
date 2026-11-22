@@ -59,18 +59,28 @@ async function run(kind, input, button, summarize) {
   }
 }
 
-function launchDashboard(port) {
+let launched = false;
+
+async function launchDashboard(port) {
   const btn = byId('btn-open-dashboard');
   if (btn) btn.style.display = 'inline-block';
   if (window.location.search.includes('probe=1') || window.__PROBE_MODE__) {
     console.log('Mode diagnostik aktif, tidak beralih ke dashboard otomatis.');
     return;
   }
+  if (launched) return;
+  launched = true;
   const status = byId('splash-status');
-  if (status) status.textContent = 'Membuka Dashboard NMS...';
-  setTimeout(() => {
-    window.location.href = 'http://127.0.0.1:' + port + '/';
-  }, 400);
+  if (status) status.textContent = 'Membuka Dashboard ADT Monitoring...';
+  const targetUrl = 'http://127.0.0.1:' + port + '/';
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const check = await fetch(targetUrl + 'api/session', { signal: AbortSignal.timeout(3000) });
+      if (check.ok) break;
+    } catch {}
+    await new Promise(r => setTimeout(r, 400));
+  }
+  window.location.replace(targetUrl);
 }
 
 async function start() {
