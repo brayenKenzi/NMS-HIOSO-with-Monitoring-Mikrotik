@@ -1,0 +1,23 @@
+{
+  "name": "momo-nms-android-probe",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:assets": "node tools/build-assets.cjs",
+    "build:web": "esbuild src/app.js --bundle --platform=browser --outfile=www/app.bundle.js",
+    "build:runtime": "esbuild src/runtime.cjs --bundle --platform=node --target=node24 --external:bridge --outfile=www/nodejs/index.js",
+    "build": "npm run build:assets && npm run build:web && npm run build:runtime",
+    "test": "node --test src/probes.test.cjs src/server.test.cjs",
+    "android:sync": "npm run build && cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
+    "@capawesome/capacitor-nodejs": "^0.3.0",
+    "esbuild": "^0.28.2",
+    "net-snmp": "^3.29.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.2"
+  }
+}

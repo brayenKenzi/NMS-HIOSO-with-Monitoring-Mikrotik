@@ -1,0 +1,7 @@
+[
+  {
+    "name": "Momonetwork Mongkonai",
+    "host": "192.168.0.99",
+    "communityEnv": "OLT_MONGKONAI_READ"
+  }
+]

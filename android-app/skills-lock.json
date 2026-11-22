@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "android-cli": {
+      "source": "android/skills",
+      "sourceType": "github",
+      "skillPath": "devtools/android-cli/SKILL.md",
+      "computedHash": "790106a5d74eec3b1ae698acda80fb7852902f021253efe5e3295708fa3e45a7"
+    },
+    "capacitor-app-development": {
+      "source": "capawesome-team/skills",
+      "sourceType": "github",
+      "skillPath": "skills/capacitor-app-development/SKILL.md",
+      "computedHash": "077e190244855d960eabe92f04c5704ebc853eb913eaa310b08fa132c03d551b"
+    },
+    "capacitor-plugins": {
+      "source": "capawesome-team/skills",
+      "sourceType": "github",
+      "skillPath": "skills/capacitor-plugins/SKILL.md",
+      "computedHash": "669de5225402f9f90b527c8abd3ec9df6f720e485e7c29a831c9895f37bb8cb9"
+    },
+    "testing-setup": {
+      "source": "android/skills",
+      "sourceType": "github",
+      "skillPath": "testing/testing-setup/SKILL.md",
+      "computedHash": "73583ed92b5b65284f31100e83f2cc75e940bd2eac388027d698a97786eccd9f"
+    }
+  }
+}

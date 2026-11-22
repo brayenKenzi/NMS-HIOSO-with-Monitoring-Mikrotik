@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="id">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MOMO NET MONITORING SYSTEM</title>
+<style>
+:root {
+  color-scheme: light;
+  --ink:#142442; --muted:#526381; --blue:#174fcb; --line:#dee7f5;
+  --green:#126745; --rose:#a32c48; --amber:#8a4a08;
+  --paper:#fff; --radius:24px; --gap:16px; --blur:16px;
+  --shadow:0 2px 5px #27487d06,0 14px 36px #27487d10;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased}
+body{margin:0;color:var(--ink);font:14px/1.45 var(--font);background:radial-gradient(ellipse at 95% 0%,#dfebff,transparent 58%),#f3f7ff}
+h1,h2,p{margin:0}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:3px solid #2765e8;outline-offset:3px}
+[hidden]{display:none!important}
+.shell{display:grid;grid-template-columns:216px minmax(0,1fr);min-height:100vh}
+.sidebar{align-self:start;position:sticky;top:0;padding:28px 16px;min-height:100vh;border-right:1px solid var(--line);background:#f7faff}
+@supports(backdrop-filter:blur(1px)){
+  .sidebar{background:#f8fbffd9;backdrop-filter:blur(var(--blur))}
+}
+.brand{display:flex;align-items:center;margin:0 4px 24px}
+.brand img{display:block;width:104px;height:83px;object-fit:contain}
+.sidebar h2{margin:0 6px 10px;font-size:12px;color:var(--muted);font-weight:700}
+.inventory{display:grid;gap:7px}
+.inventory button,.pager button{border:1px solid var(--line);border-radius:14px;background:var(--paper);min-height:44px;transition:background-color 160ms,border-color 160ms,transform 130ms}
+.inventory button{text-align:left;padding:10px 11px;font-weight:700;overflow-wrap:anywhere}
+.inventory button:hover,.pager button:hover:enabled{background:#eef4ff;border-color:#a2bdf6}
+.inventory button:active,.pager button:active:enabled{transform:scale(.98)}
+.inventory button[aria-pressed=true]{background:#e6efff;border-color:#a2bdf6;color:#1548b4}
+.inventory small{display:block;color:var(--muted);margin-top:3px;font-weight:550}
+main{width:min(100%,1620px);min-width:0;margin:auto;padding:28px clamp(15px,2.6vw,42px) 44px}
+.hero{position:relative;isolation:isolate;overflow:hidden;min-height:112px;padding:clamp(18px,2.4vw,30px);margin-bottom:var(--gap);border-radius:var(--radius);color:white;background:linear-gradient(110deg,#153ba4 0%,#235cdf 68%,#4779e7 100%);box-shadow:0 8px 20px #244eb325;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.hero::before{content:"";position:absolute;z-index:-1;right:0;top:0;width:52%;height:100%;background:repeating-radial-gradient(ellipse at 65% 105%,transparent 0 19px,#dce7ff46 20px 21px,transparent 22px 30px);mask-image:linear-gradient(to right,transparent,#000)}
+h1{font-size:clamp(25px,3.4vw,40px);font-weight:750;letter-spacing:-.045em;line-height:1.08;text-wrap:balance}
+.hero p{margin-top:9px;color:#f0f5ff;font-weight:550}
+.live{padding:7px 12px;border-radius:100px;border:1px solid #ffffff85;background:#143994;font-size:12px;font-weight:700}
+.live[data-active=true]::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:#80f3c3;margin-right:7px}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--gap);margin-bottom:var(--gap)}
+.metric,.panel{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.metric{padding:15px clamp(11px,2vw,22px);font-weight:650;color:var(--muted)}
+.metric strong{display:block;margin-top:3px;color:var(--ink);font-size:clamp(24px,3vw,38px);font-weight:770;letter-spacing:-.06em;line-height:1.15;font-variant-numeric:tabular-nums}
+.metric:nth-child(2) strong{color:var(--green)}
+.metric:nth-child(3) strong{color:var(--rose)}
+.metric:nth-child(4) strong{color:var(--blue)}
+.panel{min-width:0;overflow:hidden}
+.meta{padding:18px 20px 0}
+.meta h2{font-size:21px;letter-spacing:-.03em}
+.meta p{margin-top:4px;color:var(--muted);font-size:13px}
+#error{color:#912239;font-weight:650}
+#error:empty{display:none}
+.toolbar{display:grid;grid-template-columns:minmax(160px,1.6fr) repeat(3,minmax(120px,1fr));gap:10px;padding:16px 20px}
+label{display:grid;gap:5px;color:var(--muted);font-size:12px;font-weight:700}
+input,select{width:100%;min-width:0;min-height:44px;border:1px solid #b9c8df;border-radius:12px;padding:9px 10px;background:#f8faff;color:var(--ink);font-size:14px;font-weight:550}
+input::placeholder{color:#60718a}
+.scroll{overflow:auto;outline-offset:-3px}
+table{width:100%;border-collapse:collapse;text-align:left}
+th,td{padding:10px 9px;vertical-align:middle}
+th{background:#edf3ff;color:#405271;font-size:12px;white-space:nowrap}
+.traffic-sort{display:inline-flex;align-items:center;gap:5px;min-height:36px;padding:0 6px;border:1px solid transparent;border-radius:8px;background:transparent;font-weight:700;white-space:nowrap}
+.traffic-sort:hover,.traffic-sort[data-active=true]{color:var(--blue);background:#e0ebff}
+.mobile-sort{display:none}
+td{border-bottom:1px solid var(--line);font-size:13px;overflow-wrap:anywhere}
+td:nth-child(1),td:nth-child(5){font-weight:700}
+tbody tr:hover{background:#f5f8ff}
+.detail{display:block;margin-top:3px;color:var(--muted);font-size:11px;font-weight:550}
+.client-ip{display:inline-flex;align-items:center;min-height:28px;color:var(--blue);font-weight:700;text-underline-offset:3px}
+.client-ip:hover{color:#102f88}
+.numeric{font-variant-numeric:tabular-nums;white-space:nowrap}
+.online,.offline,.paired,.ambiguous{font-weight:700}
+.online,.paired{color:var(--green)}
+.offline{color:var(--rose)}
+.attenuation-alert>span:not(.cell-label){color:#a51d3d;font-weight:750}
+.attenuation-alert .detail{color:#8a2440}
+.ambiguous{color:var(--amber)}
+#empty{padding:22px 20px;color:var(--muted)}
+.pager{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 20px;color:var(--muted);font-weight:600}
+.pager button{padding:0 12px;font-size:13px}
+.pager button:disabled{opacity:.55;cursor:default}
+.restart-button,.restart-open{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 10px;border:1px solid #b9c8df;border-radius:10px;background:#f8faff;color:var(--blue);font-weight:700;font-size:12px;white-space:nowrap}
+.restart-button:hover,.restart-open:hover{background:#e6efff}
+.delete-onu{display:block;margin-top:4px;color:#a52140;border-color:#efc5ce}
+.delete-onu:hover{background:#fff0f3}
+.delete-onu:disabled{opacity:.55;cursor:default}
+.restart-dialog{width:min(440px,calc(100% - 32px));padding:22px;border:1px solid var(--line);border-radius:var(--radius);color:var(--ink);box-shadow:var(--shadow)}
+.restart-dialog::backdrop{background:#14244265}
+.restart-dialog p{margin-top:8px}
+.restart-progress:not(:empty){display:flex;align-items:center;gap:10px;margin-top:14px;padding:10px 12px;border-radius:10px;background:#edf4ff;color:#17478f;font-weight:650}
+.restart-progress[data-state=error]{background:#fff0f3;color:#912239}
+.restart-progress[data-state=pending]::before{content:"";flex:none;width:16px;height:16px;border:2px solid #adc6ed;border-top-color:#17478f;border-radius:50%;animation:restart-spin .8s linear infinite}
+@keyframes restart-spin{to{transform:rotate(360deg)}}
+.restart-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;margin-top:18px}
+.operations{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+.operations dialog{max-width:min(780px,calc(100% - 28px))}
+.ops-dialog{width:min(760px,calc(100% - 28px));max-height:85dvh;overflow:auto}
+.ops-dialog form label{margin:8px 0}
+.ops-items{padding-inline-start:20px;overflow-wrap:anywhere}
+.ops-items li{padding:7px 0;border-bottom:1px solid var(--line)}
+.ops-charts canvas{display:block;width:100%;height:auto;background:#f8faff;border-radius:12px;cursor:crosshair}
+.ops-charts h3{margin-bottom:4px}
+.ops-charts p{color:var(--muted);font-size:12px}
+.ops-charts .chart-summary,.ops-charts .chart-sample{padding:8px 10px;background:#edf4ff;border-radius:9px;margin:7px 0}
+.ops-charts .chart-sample{min-height:48px}
+.ops-charts input[type=range]{padding:0;min-height:36px;accent-color:var(--blue)}
+.client-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}
+.client-facts div{padding:8px 10px;background:#f0f5ff;border-radius:10px;overflow-wrap:anywhere}
+.client-facts dt{color:var(--muted);font-size:12px}
+.client-facts dd{margin:2px 0 0;font-weight:650}
+.client-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0}
+.client-actions .delete-onu{margin-top:0}
+.history-button{display:block;margin-top:4px;padding:3px 7px;min-height:32px}
+@media(max-width:760px){.history-button{min-height:44px}}
+@media(max-width:1100px){
+  .shell{grid-template-columns:minmax(0,1fr)}
+  .sidebar{position:static;min-height:0;border-right:0;border-bottom:1px solid var(--line);padding:14px clamp(15px,2.6vw,42px)}
+  .brand{margin:0 0 12px}.sidebar h2{margin-left:0}.inventory{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:760px){
+  main{padding-top:15px}.hero{min-height:0}.hero::before{width:80%}
+  .brand img{width:78px;height:58px}
+  .metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.metric{border-radius:17px}
+  .inventory{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .inventory button{font-size:12px;padding:8px}.inventory small{font-size:11px}
+  .toolbar{grid-template-columns:repeat(2,minmax(0,1fr));padding:12px}
+  input,select{font-size:16px}.meta{padding:14px 12px 0}.pager{padding:10px 12px}
+  .scroll{padding:0 12px}
+  table,tbody{display:block;width:100%}
+  thead{position:absolute;width:1px;height:1px;clip-path:inset(50%);overflow:hidden}
+  tbody tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;padding:11px;margin:0 0 8px;border:1px solid var(--line);border-radius:16px;background:#f8faff}
+  td{display:block;min-width:0;padding:0;border:0;font-size:13px;white-space:normal}
+  .cell-label{display:block!important;margin-bottom:2px;color:#526381;font-size:11px;font-weight:650}
+  .mobile-sort{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:0 12px 12px}
+  .mobile-sort .traffic-sort{min-height:44px;border-color:var(--line)}
+  .client-ip{min-height:44px}
+}
+.cell-label{display:none}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}button:active{transform:none!important}}
+</style>
+<div class="shell">
+<aside class="sidebar"><div class="brand"><img src="/momo-logo.png" alt="Momo Network"></div><h2>Tampilan pelanggan</h2><nav id="inventory" class="inventory" aria-label="Tampilan pelanggan"></nav></aside>
+<main>
+<nav class="operations" id="operations-menu" aria-label="Operasional" hidden>
+  <button type="button" class="restart-button" id="alarm-menu">Alarm</button>
+  <button type="button" class="restart-button" id="admin-menu" hidden>Admin</button>
+  <button type="button" class="restart-button" id="offline-menu" hidden>ONU Lama Offline</button>
+  <button type="button" class="restart-button" id="logout">Keluar</button>
+  <span id="session-user"></span>
+</nav>
+<header class="hero"><div><h1>Monitoring Pelanggan</h1><p id="active-device">Memuat perangkat…</p></div><span class="live" id="live">Memuat status</span></header>
+<div class="metrics" aria-label="Ringkasan ONU">
+<div class="metric">Total ONU<strong id="total">—</strong></div>
+<div class="metric">Online<strong id="online">—</strong></div>
+<div class="metric">Offline<strong id="offline">—</strong></div>
+<div class="metric">Redaman terukur<strong id="with-rx">—</strong></div>
+</div>
+<section class="panel" aria-labelledby="table-title">
+<div class="meta"><h2 id="table-title">Pelanggan &amp; trafik</h2><p id="summary" role="status">Memuat data OLT…</p><p id="olt-health"></p><p id="pppoe-health"></p><p id="error" role="alert"></p></div>
+<div class="toolbar">
+<label>Cari pelanggan<input type="search" id="search" placeholder="Nama, PPPoE, IP, atau MAC"></label>
+<label>Status<select id="state"><option value="">Semua status</option><option>Online</option><option>Offline</option><option value="unknown">Tidak diketahui</option></select></label>
+<label>Kondisi redaman<select id="power"><option value="">Semua kondisi</option><option value="highlight">Redaman tinggi (mis. −29,89)</option><option value="good">Baik (−29 dBm atau lebih kuat)</option><option value="missing">Belum terukur</option></select></label>
+<label>Kecocokan PPPoE<select id="pppoe-filter"><option value="">Semua</option><option value="paired">Sesi cocok</option><option value="ambiguous">Ambigu</option><option value="unmatched">Tanpa pasangan</option></select></label>
+</div>
+<div class="mobile-sort" role="group" aria-label="Urutkan trafik">
+<button type="button" class="traffic-sort" data-sort="txBps">TX · Unduh <span aria-hidden="true"></span></button>
+<button type="button" class="traffic-sort" data-sort="rxBps">RX · Unggah <span aria-hidden="true"></span></button>
+</div>
+<div class="scroll" tabindex="0" role="region" aria-label="Tabel ONU dan trafik PPPoE"><table role="table" aria-label="ONU dan trafik PPPoE"><thead role="rowgroup"><tr role="row">
+<th scope="col" role="columnheader">Nama di OLT</th><th scope="col" role="columnheader">MAC ONU</th><th scope="col" role="columnheader">Status ONU</th><th scope="col" role="columnheader">Redaman</th>
+<th scope="col" role="columnheader">Username PPPoE</th><th scope="col" role="columnheader">Durasi online</th>
+<th scope="col" role="columnheader" data-sort-header="txBps" aria-sort="descending"><button type="button" class="traffic-sort" data-sort="txBps">TX · Unduh <span aria-hidden="true"></span></button></th>
+<th scope="col" role="columnheader" data-sort-header="rxBps"><button type="button" class="traffic-sort" data-sort="rxBps">RX · Unggah <span aria-hidden="true"></span></button></th>
+<th scope="col" role="columnheader">Tindakan</th>
+</tr></thead><tbody id="rows" role="rowgroup"></tbody></table></div>
+<p id="empty" hidden></p>
+<nav class="pager" id="pager" aria-label="Halaman daftar ONU" hidden><button type="button" id="previous">Sebelumnya</button><span id="page-info"></span><button type="button" id="next">Berikutnya</button></nav>
+</section>
+</main>
+</div>
+<dialog class="restart-dialog" id="restart-dialog" aria-labelledby="restart-title">
+  <h2 id="restart-title">Restart Modem</h2>
+  <p id="restart-target"></p>
+  <p id="restart-guide"></p>
+  <p>Koneksi pelanggan akan terputus sementara setelah reboot.</p>
+  <p class="restart-progress" id="restart-result" role="status" aria-atomic="true"></p>
+  <div class="restart-actions">
+    <form method="dialog"><button class="restart-button" id="restart-close" autofocus>Batal</button></form>
+    <a class="restart-open" id="restart-open" target="_blank" rel="noopener noreferrer">Buka admin OLT</a>
+    <button type="button" class="restart-button" id="restart-confirm" hidden>Restart sekarang</button>
+  </div>
+</dialog>
+<dialog class="restart-dialog" id="auth-dialog" aria-labelledby="auth-title">
+  <h2 id="auth-title">Masuk ke NMS</h2>
+  <form id="auth-form">
+    <label>Username<input name="username" autocomplete="username" required maxlength="32"></label>
+    <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="128"></label>
+    <p id="auth-result" role="status"></p>
+    <div class="restart-actions"><button class="restart-button" id="auth-submit">Masuk</button></div>
+  </form>
+</dialog>
+<dialog class="restart-dialog ops-dialog" id="ops-dialog" aria-labelledby="ops-title">
+  <h2 id="ops-title"></h2>
+  <div id="ops-body"></div>
+  <form method="dialog" class="restart-actions"><button class="restart-button">Tutup</button></form>
+</dialog>
+<script src="/operations.js"></script>
+<script>
+const inventory = document.querySelector('#inventory');
+const activeDevice = document.querySelector('#active-device');
+const state = document.querySelector('#state');
+const power = document.querySelector('#power');
+const search = document.querySelector('#search');
+const summary = document.querySelector('#summary');
+const error = document.querySelector('#error');
+const rows = document.querySelector('#rows');
+const empty = document.querySelector('#empty');
+const pppoeFilter = document.querySelector('#pppoe-filter');
+const pppoeHealth = document.querySelector('#pppoe-health');
+const oltHealth = document.querySelector('#olt-health');
+const live = document.querySelector('#live');
+const pager = document.querySelector('#pager');
+const previousButton = document.querySelector('#previous');
+const nextButton = document.querySelector('#next');
+const pageInfo = document.querySelector('#page-info');
+const restartDialog = document.querySelector('#restart-dialog');
+const restartTarget = document.querySelector('#restart-target');
+const restartGuide = document.querySelector('#restart-guide');
+const restartOpen = document.querySelector('#restart-open');
+const restartConfirm = document.querySelector('#restart-confirm');
+const restartResult = document.querySelector('#restart-result');
+const restartClose = document.querySelector('#restart-close');
+restartDialog.addEventListener('cancel', event => {
+  if (restartResult.dataset.state === 'pending') event.preventDefault();
+});
+const pageSize = 12;
+const headings = Array.from(document.querySelectorAll('th'), cell => cell.textContent.trim());
+const sortButtons = document.querySelectorAll('[data-sort]');
+const sortHeaders = document.querySelectorAll('[data-sort-header]');
+let trafficSort = 'txBps';
+let descending = true;
+const format = new Intl.NumberFormat('id-ID', {minimumFractionDigits:2,maximumFractionDigits:2});
+let devices = [];
+let inventoryLoaded = false;
+let selected = 'all';
+let page = 0;
+let fetchError = '';
+
+function setText(node, text) {
+  if (node.textContent !== text) node.textContent = text;
+}
+
+function compareTraffic(a, b) {
+  const left = a.pppoe?.[trafficSort];
+  const right = b.pppoe?.[trafficSort];
+  if (!Number.isFinite(left)) return Number.isFinite(right) ? 1 : 0;
+  if (!Number.isFinite(right)) return -1;
+  return descending ? right - left : left - right;
+}
+
+function renderSort() {
+  for (const button of sortButtons) {
+    const active = button.dataset.sort === trafficSort;
+    button.dataset.active = active;
+    button.setAttribute('aria-pressed', active);
+    const label = button.dataset.sort === 'txBps' ? 'TX · Unduh' : 'RX · Unggah';
+    button.setAttribute('aria-label', label + (active ? (descending ? ', terbesar dulu' : ', terkecil dulu') : ', urutkan'));
+    setText(button.querySelector('span'), active ? (descending ? '↓' : '↑') : '↕');
+  }
+  for (const header of sortHeaders) {
+    if (header.dataset.sortHeader === trafficSort) header.setAttribute('aria-sort', descending ? 'descending' : 'ascending');
+    else header.removeAttribute('aria-sort');
+  }
+}
+
+function createRow(key) {
+  const row = document.createElement('tr');
+  row.dataset.key = key;
+  row.setAttribute('role', 'row');
+  for (const heading of headings) {
+    const cell = row.insertCell();
+    cell.setAttribute('role', 'cell');
+    const label = document.createElement('span');
+    label.className = 'cell-label';
+    label.setAttribute('aria-hidden', 'true');
+    label.textContent = heading;
+    const detail = document.createElement('small');
+    detail.className = 'detail';
+    cell.append(label, document.createElement('span'), detail);
+  }
+  return row;
+}
+
+function clientIpUrl(address) {
+  const octets = String(address ?? '').split('.');
+  if (octets.length !== 4 || octets.some(octet => !/^(0|[1-9]\d{0,2})$/.test(octet) || Number(octet) > 255)) return null;
+  return 'http://' + octets.join('.') + '/';
+}
+
+function paintRow(row, values) {
+  values.forEach(([value, detail, className, address], index) => {
+    const cell = row.cells[index];
+    const [, valueElement, detailElement] = cell.children;
+    setText(valueElement, value ?? '—');
+    const url = clientIpUrl(address);
+    let link = detailElement.querySelector('a');
+    if (url) {
+      if (!link) {
+        link = document.createElement('a');
+        link.className = 'client-ip';
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        detailElement.replaceChildren(link, document.createElement('span'));
+      }
+      if (link.getAttribute('href') !== url) link.href = url;
+      setText(link, address);
+      link.setAttribute('aria-label', 'Buka IP ' + address + ' di tab baru');
+      setText(detailElement.lastElementChild, ' · ' + detail);
+    } else {
+      setText(detailElement, [address, detail].filter(Boolean).join(' · '));
+    }
+    detailElement.hidden = !detail && !url;
+    cell.className = className ?? '';
+  });
+}
+
+function setRestartAction(content, row) {
+  const admin = clientIpUrl(row.source.host);
+  if (!admin || !row.mac) {
+    setText(content, '—');
+    return;
+  }
+  let button = content.querySelector('button');
+  if (!button) {
+    button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'restart-button';
+    button.textContent = 'Restart Modem';
+    content.replaceChildren(button);
+  }
+  button.onclick = () => {
+    const [, onu] = /^1\.1\.(\d+)$/.exec(row.index) ?? [];
+    const knownPon = row.source.host === '192.168.0.99' && onu;
+    const direct = Boolean(row.source.directRestart && row.status === 'Online');
+    restartTarget.textContent = [row.name, row.mac, row.source.name, row.source.host].filter(Boolean).join(' · ');
+    restartGuide.textContent = direct ? 'NMS akan mencari lokasi ONU dan memverifikasi MAC langsung di OLT sebelum reboot.' : (knownPon
+      ? 'Di admin OLT, buka ONU Management → ONU Config → PON 0/1 → ONU 0/1:' + onu + '. '
+      : 'Di admin OLT, gunakan ONU Management → Search ONU untuk menemukan MAC di atas. ') +
+      'Cocokkan MAC di halaman detail, lalu pilih Operation → Reboot dan tekan Apply.';
+    restartOpen.href = admin;
+    restartConfirm.hidden = !direct;
+    restartConfirm.disabled = false;
+    restartConfirm.textContent = 'Restart sekarang';
+    restartClose.disabled = false;
+    restartClose.textContent = 'Batal';
+    restartOpen.hidden = false;
+    delete restartResult.dataset.state;
+    restartResult.textContent = '';
+    restartConfirm.onclick = async () => {
+      if (restartConfirm.disabled) return;
+      restartConfirm.disabled = true;
+      restartConfirm.textContent = 'Sedang memproses…';
+      restartClose.disabled = true;
+      restartOpen.hidden = true;
+      restartResult.dataset.state = 'pending';
+      restartResult.textContent = 'Restart sedang berlangsung. NMS sedang memeriksa target dan menghubungi OLT…';
+      try {
+        const response = await fetch('/api/onu/restart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host: row.source.host, index: row.index, mac: row.mac, action: 'reboot' }),
+        });
+        const { message } = await response.json();
+        restartResult.dataset.state = response.ok ? 'accepted' : 'error';
+        restartResult.textContent = response.ok
+          ? 'Perintah restart diterima. Modem sedang memulai ulang. Pantau status hingga kembali online.'
+          : message || 'Perintah belum terkonfirmasi. Periksa status ONU sebelum mencoba lagi.';
+      } catch {
+        restartResult.dataset.state = 'error';
+        restartResult.textContent = 'Hasil belum terkonfirmasi. Periksa status ONU sebelum mencoba lagi.';
+      } finally {
+        restartConfirm.hidden = true;
+        restartClose.textContent = 'Tutup';
+        restartClose.disabled = false;
+        restartClose.focus();
+      }
+    };
+    restartDialog.showModal();
+  };
+}
+
+function trafficRate(bps) {
+  if (bps == null) return '—';
+  if (bps >= 1e6) return format.format(bps / 1e6) + ' Mbps';
+  if (bps >= 1e3) return format.format(bps / 1e3) + ' kbps';
+  return Math.round(bps) + ' bps';
+}
+
+const totalGb = value => value == null ? null : format.format(value) + ' GB sesi';
+const matchLabel = { exact:'MAC penuh', prefix:'Awalan MAC unik', ambiguous:'Ambigu', unmatched:'Tanpa pasangan aktif', unavailable:'Belum tersedia' };
+const isPaired = row => ['exact', 'prefix'].includes(row.pppoe?.state);
+const attenuationCondition = value => !Number.isFinite(value) ? 'missing' : value < -29 ? 'highlight' : 'good';
+
+function selectedView() {
+  if (!devices.length) return null;
+  const visibleDevices = selected === 'all' ? devices : devices.filter(device => device.host === selected);
+  const first = visibleDevices[0];
+  if (!first) return null;
+  if (selected !== 'all') {
+    return { ...first, rows: first.rows.map(row => ({ ...row, source: first })) };
+  }
+  const ready = visibleDevices.filter(device => device.updated);
+  const failed = visibleDevices.filter(device => device.error);
+  return {
+    name: 'Semua Klien',
+    host: ready.length + ' dari ' + visibleDevices.length + ' OLT memiliki data',
+    rows: visibleDevices.flatMap(device => device.rows.map(row => ({ ...row, source: device }))),
+    updated: ready.map(device => device.updated).sort()[0],
+    polling: visibleDevices.some(device => device.polling),
+    error: failed.length ? 'Periksa SNMP pada ' + failed.map(device => device.name).join(', ') + '.' : null,
+    pppoe: first.pppoe,
+  };
+}
+
+function render() {
+  const current = selectedView();
+  setText(activeDevice, current ? current.name + ' · ' + current.host :
+    inventoryLoaded ? 'Belum ada OLT terdaftar' : 'Memuat perangkat…');
+  const entries = current?.rows ?? [];
+  document.querySelector('#total').textContent = current?.updated ? entries.length : '—';
+  document.querySelector('#online').textContent = current?.updated ? entries.filter(row => row.status === 'Online').length : '—';
+  document.querySelector('#offline').textContent = current?.updated ? entries.filter(row => row.status === 'Offline').length : '—';
+  document.querySelector('#with-rx').textContent = current?.updated ? entries.filter(row => row.rx !== null).length : '—';
+  const query = search.value.trim().toLowerCase();
+  const macQuery = /^(?:[a-f0-9]{2}[:-]){5}[a-f0-9]{2}$|^[a-f0-9]{12}$/i.test(query)
+    ? query.replace(/[:-]/g, '') : null;
+  const matches = entries.filter(row =>
+    ([row.name, row.mac, row.pppoe?.username, row.pppoe?.address, row.source.name].join(' ').toLowerCase().includes(query) ||
+      (macQuery && row.mac?.replace(/:/g, '').toLowerCase() === macQuery)) &&
+    (!state.value || (row.status ?? 'unknown') === state.value) &&
+    (!power.value || attenuationCondition(row.rx) === power.value) &&
+    (!pppoeFilter.value || (isPaired(row) ? 'paired' : row.pppoe?.state) === pppoeFilter.value));
+  matches.sort((a,b) => compareTraffic(a, b) || (a.rx ?? Infinity) - (b.rx ?? Infinity) ||
+    a.source.host.localeCompare(b.source.host, 'id', {numeric:true}) ||
+    a.index.localeCompare(b.index, 'id', {numeric:true}));
+  const pageCount = Math.max(1, Math.ceil(matches.length / pageSize));
+  page = Math.min(page, pageCount - 1);
+  const visible = matches.slice(page * pageSize, (page + 1) * pageSize);
+  const currentRows = new Map(Array.from(rows.children, row => [row.dataset.key, row]));
+  visible.forEach((row, position) => {
+    const key = row.source.host + '/' + row.index;
+    const tr = currentRows.get(key) ?? createRow(key);
+    currentRows.delete(key);
+    const session = row.pppoe ?? {};
+    const label = matchLabel[session.state];
+    const paired = isPaired(row);
+    const highlighted = attenuationCondition(row.rx) === 'highlight';
+    paintRow(tr, [
+      [row.name || null, selected === 'all' ? row.source.name : null], [row.mac, null, 'numeric'],
+      [row.status, null, row.status?.toLowerCase()],
+      [row.rx === null ? null : format.format(row.rx) + ' dBm', highlighted ? 'Redaman tinggi' : null,
+        highlighted ? 'numeric attenuation-alert' : 'numeric'],
+      [paired ? session.username : label, paired ? label : null,
+        paired ? 'paired' : session.state === 'ambiguous' ? 'ambiguous' : null, paired ? session.address : null],
+      [session.uptime, null, 'numeric'],
+      [trafficRate(session.txBps), totalGb(session.txGB), 'numeric'],
+      [trafficRate(session.rxBps), totalGb(session.rxGB), 'numeric'],
+    ]);
+    setRestartAction(tr.cells[headings.length - 1].children[1], row);
+    nmsOperations.deleteButton(tr.cells[headings.length - 1], row);
+    nmsOperations.historyButton(tr.cells[0], row);
+    if (rows.children[position] !== tr) rows.insertBefore(tr, rows.children[position] ?? null);
+  });
+  for (const row of currentRows.values()) row.remove();
+  pager.hidden = pageCount <= 1;
+  previousButton.disabled = page === 0;
+  nextButton.disabled = page + 1 >= pageCount;
+  setText(pageInfo, 'Halaman ' + (page + 1) + ' / ' + pageCount);
+  const updated = current?.updated
+    ? new Date(current.updated).toLocaleString('id-ID', {timeZone:'Asia/Makassar'}) + ' WITA'
+    : 'Belum ada data';
+  setText(summary, current
+    ? matches.length + ' dari ' + current.rows.length + ' ONU'
+    : fetchError || inventoryLoaded ? 'OLT belum tersedia' : 'Memuat data OLT…');
+  setText(oltHealth, current ? (selected === 'all' ? 'Sampel SNMP terlama · ' : 'SNMP · ') + updated +
+    (current.polling ? ' · Membaca…' : '') : '');
+  setText(error, fetchError || (current?.error ? (current.updated ? 'Data terakhir. ' : '') + current.error : ''));
+  const pppoe = current?.pppoe;
+  const online = pppoe?.available && pppoe.inventoryReady && !fetchError;
+  setText(live, online ? 'PPPoE aktif' : fetchError || pppoe?.error ? 'Koneksi terganggu' : 'Menunggu PPPoE');
+  live.dataset.active = Boolean(online);
+  pppoeHealth.textContent = online
+    ? entries.filter(isPaired).length + ' cocok · ' + entries.filter(row => row.pppoe?.state === 'ambiguous').length +
+      ' ambigu · Sampel trafik ' + new Date(pppoe.sampledAt).toLocaleTimeString('id-ID', {timeZone:'Asia/Makassar'}) +
+      ' WITA · Interval ' + ((pppoe.intervalMs ?? 2000) / 1000) + ' detik'
+    : !pppoe?.configured ? 'MikroTik PPPoE belum dikonfigurasi.'
+    : pppoe.error ? 'Pembacaan PPPoE gagal. ' + pppoe.error
+    : fetchError ? 'Data PPPoE terakhir ditampilkan.'
+    : 'Menunggu data PPPoE dan inventaris MAC OLT…';
+  empty.hidden = matches.length > 0;
+  empty.textContent = (query || state.value || power.value || pppoeFilter.value) && current?.updated
+    ? 'Tidak ada ONU yang cocok.' : current?.polling ? 'Menunggu hasil SNMP…' : 'Belum ada ONU untuk ditampilkan.';
+}
+
+function renderInventory() {
+  const views = [{ host:'all', name:'Semua Klien', detail:devices.length + ' OLT' },
+    ...devices.map(olt => ({ ...olt, detail:olt.error ? 'Perlu diperiksa' : olt.updated ? 'SNMP aktif' : 'Menunggu polling' }))];
+  views.forEach((olt, index) => {
+    let button = inventory.children[index];
+    if (!button) {
+      button = document.createElement('button');
+      button.type = 'button';
+      button.append(document.createElement('span'), document.createElement('small'));
+      button.addEventListener('click', () => {
+        selected = button.dataset.host;
+        page = 0;
+        renderInventory();
+        render();
+      });
+      inventory.append(button);
+    }
+    button.dataset.host = olt.host;
+    button.setAttribute('aria-pressed', olt.host === selected);
+    setText(button.firstElementChild, olt.name);
+    setText(button.lastElementChild, olt.detail);
+  });
+  while (inventory.children.length > views.length) inventory.lastElementChild.remove();
+}
+
+async function load() {
+  try {
+    const response = await fetch('/api/olts');
+    if (response.status === 401) {
+      location.reload();
+      return;
+    }
+    if (!response.ok) throw new Error();
+    devices = await response.json();
+    inventoryLoaded = true;
+    if (selected !== 'all' && !devices.some(device => device.host === selected)) selected = 'all';
+    renderInventory();
+    fetchError = '';
+  } catch {
+    fetchError = 'Dashboard tidak dapat mengambil data terbaru.';
+  }
+  render();
+  setTimeout(load, devices[0]?.pppoe?.intervalMs ?? 2000);
+}
+
+function resetPage() {
+  page = 0;
+  render();
+}
+state.addEventListener('change', resetPage);
+power.addEventListener('change', resetPage);
+for (const button of sortButtons) {
+  button.addEventListener('click', () => {
+    descending = button.dataset.sort !== trafficSort || !descending;
+    trafficSort = button.dataset.sort;
+    renderSort();
+    resetPage();
+  });
+}
+renderSort();
+pppoeFilter.addEventListener('change', resetPage);
+search.addEventListener('input', resetPage);
+previousButton.addEventListener('click', () => { page--; render(); });
+nextButton.addEventListener('click', () => { page++; render(); });
+nmsOperations.start(load);
+</script>
+</html>

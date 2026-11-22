@@ -1,0 +1,19 @@
+{
+  "appId": "id.momonet.nms.probe",
+  "appName": "MOMO NET NMS",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true,
+    "allowNavigation": [
+      "127.0.0.1",
+      "127.0.0.1:*",
+      "localhost",
+      "localhost:*"
+    ]
+  },
+  "android": { "loggingBehavior": "none" },
+  "plugins": {
+    "Nodejs": { "nodeDir": "nodejs", "startMode": "manual" }
+  }
+}

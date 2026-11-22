@@ -1,0 +1,10 @@
+node_modules/
+www/nodejs/index.js
+www/app.bundle.js
+android/.gradle/
+android/local.properties
+android/app/build/
+android/build/
+.gradle-download/
+*-output.log
+*-errors.log
