@@ -60,6 +60,7 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
       }
       const token = await store.loginPin(payload.pin);
       if (token) {
+        store.recordAction('admin', 'pin_login', req.socket?.remoteAddress || '', 'Masuk menggunakan PIN');
         res.setHeader('Set-Cookie', cookie + token + flags + '; Max-Age=2592000');
         json(res, 200, { message: 'PIN terverifikasi.' });
       } else {
@@ -81,6 +82,7 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
       }
       try {
         await store.setPin(payload.pin);
+        store.recordAction(user?.username || 'admin', 'pin_change', '', 'PIN keamanan diperbarui');
         json(res, 200, { message: 'PIN berhasil diperbarui.' });
       } catch (err) {
         json(res, 400, { message: err.message });
@@ -104,6 +106,7 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
           const token = await store.login(uName, uPass);
           if (token) {
             attempts.delete(address);
+            store.recordAction(String(uName).toLowerCase(), 'login', '', 'Masuk ke panel');
             res.setHeader('Set-Cookie', cookie + token + flags + '; Max-Age=2592000');
             json(res, 200, {});
             return false;
@@ -139,6 +142,10 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
       if (path !== '/api/login') {
         const failure = await store.createUser(username, password, path === '/api/setup' ? 'admin' : 'technician');
         if (failure || path === '/api/technicians') {
+          if (!failure && path === '/api/technicians') {
+            const cleanTech = String(username || '').trim().toLowerCase();
+            store.recordAction(user.username, 'tech_add', cleanTech, 'Buat akun teknisi: ' + cleanTech);
+          }
           json(res, failure ? 400 : 201, { message: failure ?? 'Akun teknisi dibuat.' });
           return false;
         }
@@ -149,6 +156,7 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
       const token = await store.login(username, password);
       if (token) {
         attempts.delete(address);
+        store.recordAction(String(username || '').trim().toLowerCase(), 'login', '', path === '/api/setup' ? 'Setup akun admin' : 'Masuk ke panel');
         res.setHeader('Set-Cookie', cookie + token + flags + '; Max-Age=2592000');
       }
       json(res, token ? 200 : 401, token ? {} : { message: 'Username atau password salah.' });
@@ -173,9 +181,17 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
       }
       if (path === '/api/technicians/password') {
         const err = await store.updateUserPassword(payload?.username, payload?.password);
+        if (!err) {
+          const cleanTarget = String(payload?.username || '').trim().toLowerCase();
+          store.recordAction(user.username, 'tech_password', cleanTarget, 'Reset password akun ' + cleanTarget);
+        }
         json(res, err ? 400 : 200, { message: err ?? 'Password berhasil diperbarui.' });
       } else {
         const err = store.deleteUser(payload?.username, user.username);
+        if (!err) {
+          const cleanTarget = String(payload?.username || '').trim().toLowerCase();
+          store.recordAction(user.username, 'tech_delete', cleanTarget, 'Hapus akun ' + cleanTarget);
+        }
         json(res, err ? 400 : 200, { message: err ?? 'Akun teknisi berhasil dihapus.' });
       }
       return false;
@@ -198,6 +214,7 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
         return false;
       }
       const [status, message] = await (controls.restartSnmp?.(payload?.host) ?? [501, 'Tidak tersedia.']);
+      store.recordAction(user.username, 'snmp_restart', String(payload?.host || ''), message, status === 200 ? 'sent' : 'rejected');
       json(res, status, { message });
       return false;
     }
@@ -220,10 +237,12 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
         }
         const current = store.getRouterConfigs();
         if (data?.action === 'remove') {
+          const targetRouter = current.find(r => r.id === data.id);
           const next = current.filter(r => r.id !== data.id);
           const saved = store.setRouterConfigs(next);
           routerModule.updateRouterConfigs(saved);
           void routerModule.pollPppoe(true);
+          store.recordAction(user.username, 'router_remove', targetRouter?.url || String(data.id || ''), 'Hapus MikroTik: ' + (targetRouter?.name || data.id || ''));
           json(res, 200, { message: 'MikroTik dihapus.' });
           return false;
         }
@@ -244,6 +263,7 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
         const saved = store.setRouterConfigs([...current, { name, url, username, password, oltHosts }]);
         routerModule.updateRouterConfigs(saved);
         void routerModule.pollPppoe(true);
+        store.recordAction(user.username, 'router_add', url, 'Tambah MikroTik: ' + name);
         json(res, 201, { message: 'MikroTik ' + name + ' berhasil ditambahkan.' });
         return false;
       }
@@ -268,6 +288,7 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
         store.setRouterConfig(data);
         routerModule.updateRouterConfig(data);
         void routerModule.pollPppoe(true);
+        store.recordAction(user.username, 'router_add', String(data?.url || ''), 'Perbarui MikroTik: ' + String(data?.name || 'MikroTik Utama'));
         json(res, 200, { message: 'Konfigurasi MikroTik berhasil disimpan.' });
       } else {
         json(res, 405, { message: 'Metode tidak didukung.' });
@@ -286,6 +307,10 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
           return false;
         }
         const [status, message] = olts.update(data);
+        if (status === 200 || status === 201) {
+          const actionLabel = data?.action === 'remove' ? 'Hapus OLT ' : 'Tambah OLT ';
+          store.recordAction(user.username, 'olt_update', String(data?.host || ''), actionLabel + (data?.name || data?.host || ''));
+        }
         json(res, status, { message });
       } else json(res, 405, { message: 'Metode tidak didukung.' });
       return false;
@@ -327,6 +352,7 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
         routerModule.updateRouterConfig(data.router);
         void routerModule.pollPppoe(true);
       }
+      store.recordAction(user.username, 'config_import', '', 'Impor konfigurasi (' + (Array.isArray(data?.olts) ? data.olts.length + ' OLT' : 'MikroTik') + ')');
       json(res, 200, { message: 'Konfigurasi berhasil diimpor.' });
       return false;
     }

@@ -165,14 +165,40 @@ const nmsOperations = (() => {
       accounts.replaceChildren(users.length ? userList : element('p', 'Belum ada akun.'));
       const outcome = { sent:'Perintah diterima', rejected:'Ditolak', uncertain:'Hasil belum pasti', request:'Permintaan tercatat' };
       const recovery = { waiting:'Pemulihan belum teramati', down:'Teramati offline', online:'Kembali online' };
-      const opLabel = op => op === 'delete' ? 'Hapus ONU' : op === 'wifi' ? 'Ubah Wi-Fi' : 'Restart Modem';
-      audit.replaceChildren(items(records, e => [
-        time(e.at), opLabel(e.operation),
-        e.client_name ? 'Klien: ' + e.client_name : e.inventory_name ? 'Klien: ' + e.inventory_name + ' (nama saat ini)' : 'Nama klien belum diketahui',
-        'Oleh ' + e.username, e.host, e.mac,
-        e.operation === 'delete' && e.outcome === 'sent' ? 'Terhapus di OLT' : outcome[e.outcome],
-        e.operation === 'reboot' && ['sent', 'uncertain'].includes(e.outcome) ? recovery[e.recovery] : '',
-      ].filter(Boolean).join(' · '), 'Belum ada tindakan ONU.'));
+      const opLabels = {
+        reboot: 'Restart Modem',
+        delete: 'Hapus ONU',
+        wifi: 'Ubah Wi-Fi',
+        login: 'Login Panel',
+        pin_login: 'Login PIN',
+        tech_add: 'Buat Teknisi',
+        tech_password: 'Ganti Password',
+        tech_delete: 'Hapus Teknisi',
+        pin_change: 'Ubah PIN',
+        olt_update: 'Kelola OLT',
+        router_add: 'Tambah MikroTik',
+        router_remove: 'Hapus MikroTik',
+        config_import: 'Impor Konfigurasi',
+        snmp_restart: 'Restart SNMP',
+      };
+      const opLabel = op => opLabels[op] || 'Aktivitas';
+      const isSystemOp = op => !['reboot', 'delete', 'wifi'].includes(op);
+      audit.replaceChildren(items(records, e => {
+        const sys = isSystemOp(e.operation);
+        const subject = sys
+          ? (e.client_name || '')
+          : (e.client_name ? 'Klien: ' + e.client_name : e.inventory_name ? 'Klien: ' + e.inventory_name + ' (nama saat ini)' : 'Nama klien belum diketahui');
+        return [
+          time(e.at),
+          opLabel(e.operation),
+          subject,
+          'Oleh ' + e.username,
+          e.host || '',
+          e.mac || '',
+          sys ? '' : (e.operation === 'delete' && e.outcome === 'sent' ? 'Terhapus di OLT' : outcome[e.outcome]),
+          e.operation === 'reboot' && ['sent', 'uncertain'].includes(e.outcome) ? recovery[e.recovery] : '',
+        ].filter(Boolean).join(' · ');
+      }, 'Belum ada aktivitas tercatat.'));
     };
     form.addEventListener('submit', async event => {
       event.preventDefault();
@@ -206,7 +232,7 @@ const nmsOperations = (() => {
     managePin.addEventListener('click', () => void showPinManagement());
 
     navGroup.append(manage, manageRouter, manageBackup, managePin);
-    target.replaceChildren(navGroup, form, element('h3', 'Daftar akun'), accounts, element('h3', 'Log Tindakan ONU'), audit);
+    target.replaceChildren(navGroup, form, element('h3', 'Daftar akun'), accounts, element('h3', 'Log Aktivitas (Retensi 7 Hari)'), audit);
     try { await reload(); } catch (error) { message.textContent = error.message; }
   });
 

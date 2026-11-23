@@ -278,24 +278,21 @@ async function summonDevice(deviceId, { force = false, baseUrl: overrideUrl } = 
   let queued = false;
 
   try {
-    const r1 = await nbiRequest(baseUrl, `/devices/${encodedId}/tasks?timeout=5000&connection_request`, {
+    const r1 = await nbiRequest(baseUrl, `/devices/${encodedId}/tasks?timeout=8000&connection_request`, {
       method: 'POST',
-      body: { name: 'refreshObject', objectName: 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1' },
-      timeoutMs: 6500,
+      body: {
+        name: 'getParameterValues',
+        parameterNames: [
+          'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID',
+          'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.TotalAssociations',
+          'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.AssociatedDevice.',
+          'InternetGatewayDevice.LANDevice.1.Hosts.Host.',
+        ],
+      },
+      timeoutMs: 9500,
     });
     if (r1.status === 200) live = true;
     else if (r1.status === 202) queued = true;
-  } catch {}
-
-  try {
-    const hostsSuffix = live ? '?timeout=5000&connection_request' : '';
-    const r2 = await nbiRequest(baseUrl, `/devices/${encodedId}/tasks` + hostsSuffix, {
-      method: 'POST',
-      body: { name: 'refreshObject', objectName: 'InternetGatewayDevice.LANDevice.1.Hosts' },
-      timeoutMs: live ? 6500 : 3000,
-    });
-    if (r2.status === 200) live = true;
-    else if (r2.status === 202 && !live) queued = true;
   } catch {}
 
   return { live, queued };
@@ -360,10 +357,17 @@ async function updateWifi(deviceId, { ssid, password, baseUrl: overrideUrl } = {
   let paths = detectWifiPaths(doc);
   if (hasPassword && !paths.hasExplicitPasswordNode) {
     try {
-      await nbiRequest(baseUrl, `/devices/${encodeURIComponent(deviceId)}/tasks?timeout=5000&connection_request`, {
+      await nbiRequest(baseUrl, `/devices/${encodeURIComponent(deviceId)}/tasks?timeout=6000&connection_request`, {
         method: 'POST',
-        body: { name: 'refreshObject', objectName: 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1' },
-        timeoutMs: 6500,
+        body: {
+          name: 'getParameterValues',
+          parameterNames: [
+            'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.KeyPassphrase',
+            'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase',
+            'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.PreSharedKey',
+          ],
+        },
+        timeoutMs: 7500,
       });
       const fresh = await fetchDeviceById(deviceId, baseUrl);
       if (fresh) {

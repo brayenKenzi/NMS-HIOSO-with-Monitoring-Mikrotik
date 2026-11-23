@@ -1089,6 +1089,8 @@ test('GenieACS realtime auto-summon, active clients parsing, and Wi-Fi SSID/pass
     assert.equal(modem.configured, true);
     assert.equal(modem.found, true);
     assert.equal(modem.summonResult.live, true);
+    assert.ok(nbiCalls.some(c => c.body?.name === 'getParameterValues'));
+    assert.equal(nbiCalls.some(c => c.body?.name === 'refreshObject'), false);
     assert.equal(modem.device.ssid, 'RUMAH-LAMA');
     assert.equal(modem.device.activeClientsCount, 2);
     assert.equal(modem.device.clients.length, 2); // inactive host excluded; merged RSSI from AssociatedDevice
@@ -1152,18 +1154,66 @@ test('GenieACS realtime auto-summon, active clients parsing, and Wi-Fi SSID/pass
     assert.equal(currentSsid, 'RUMAH-BARU');
     assert.equal(currentPass, 'sandibaru456');
 
-    // Audit recorded without plaintext password
+    // Audit recorded without plaintext password, plus login action recorded
     const auditRes = await fetch('http://127.0.0.1:' + port + '/api/audit', {
       headers: { Cookie: cookie },
     });
     const audits = await auditRes.json();
     assert.ok(audits.some(a => a.operation === 'wifi' && a.outcome === 'sent' && a.mac === 'F8:6C:E1:00:11:11'));
+    assert.ok(audits.some(a => a.operation === 'login' && a.username === 'admin'));
     assert.equal(JSON.stringify(audits).includes('sandibaru456'), false);
   } finally {
     try { nms?.stop(); } catch {}
     mockGenie.closeAllConnections?.();
     mockGenie.close();
     await new Promise(r => setTimeout(r, 100));
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('store enforces 7-day log retention on samples/alarms/audit and records admin actions', async () => {
+  const { DatabaseSync } = require('node:sqlite');
+  const dir = mkdtempSync(join(tmpdir(), 'momo-retention-'));
+  const dbPath = join(dir, 'ret.sqlite');
+  try {
+    const store = openStore(dbPath);
+    await store.createUser('admin', 'password123', 'admin');
+    store.recordAction('admin', 'olt_update', '192.168.100.2', 'Tambah OLT TEST');
+    store.close();
+
+    const now = Date.now();
+    const eightDaysAgo = now - 8 * 86400000;
+    const oneDayAgo = now - 1 * 86400000;
+    const rawDb = new DatabaseSync(dbPath);
+    rawDb.prepare('INSERT INTO samples(host,mac,at,rx,status,tx,upload) VALUES(?,?,?,?,?,?,?)')
+      .run('10.0.0.1', '1.1/AA:BB:CC:DD:EE:01', eightDaysAgo, -18, 'Online', 100, 50);
+    rawDb.prepare('INSERT INTO samples(host,mac,at,rx,status,tx,upload) VALUES(?,?,?,?,?,?,?)')
+      .run('10.0.0.1', '1.1/AA:BB:CC:DD:EE:01', oneDayAgo, -18, 'Online', 200, 80);
+    rawDb.prepare('INSERT INTO alarms(key,at,until,kind,title,detail) VALUES(?,?,?,?,?,?)')
+      .run('old-resolved', eightDaysAgo - 3600000, eightDaysAgo, 'onu', 'Alarm Lama', 'Sudah pulih');
+    rawDb.prepare('INSERT INTO alarms(key,at,until,kind,title,detail) VALUES(?,?,?,?,?,?)')
+      .run('still-active', eightDaysAgo - 3600000, null, 'olt', 'Alarm Aktif', 'Belum pulih');
+    rawDb.prepare('INSERT INTO alarms(key,at,until,kind,title,detail) VALUES(?,?,?,?,?,?)')
+      .run('recent-resolved', oneDayAgo - 3600000, oneDayAgo, 'onu', 'Alarm Baru', 'Pulih baru');
+    rawDb.prepare('INSERT INTO audit(at,username,host,mac,outcome,recovery,operation,client_name,onu_index) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(eightDaysAgo, 'admin', '10.0.0.1', '', 'sent', 'done', 'login', 'Login lama', null);
+    rawDb.close();
+
+    const reopened = openStore(dbPath);
+    reopened.pruneOldLogs(now);
+    const audits = await reopened.audits();
+    const alarms = reopened.alarms();
+    const hist = reopened.history('10.0.0.1', 'AA:BB:CC:DD:EE:01', 14, '1.1', false);
+    reopened.close();
+
+    assert.equal(hist.length, 1);
+    assert.equal(hist[0].tx, 200);
+    assert.equal(alarms.some(a => a.key === 'old-resolved'), false);
+    assert.equal(alarms.some(a => a.key === 'still-active'), true);
+    assert.equal(alarms.some(a => a.key === 'recent-resolved'), true);
+    assert.equal(audits.some(a => a.client_name === 'Login lama'), false);
+    assert.equal(audits.some(a => a.operation === 'olt_update' && a.client_name === 'Tambah OLT TEST'), true);
+  } finally {
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 });

@@ -5,6 +5,7 @@ const { supabase } = require('./supabase.cjs');
 
 const derive = promisify(scrypt);
 const day = 86400000;
+const RETENTION_DAYS = 7;
 
 function openStore(path) {
   const db = new DatabaseSync(path);
@@ -40,6 +41,7 @@ function openStore(path) {
   const failures = new Map();
   const previous = new Map();
   let lastMinute = -1;
+  let lastCleanup = 0;
   let baselineCache = { at: 0, map: new Map() };
   const upsert = sql(`INSERT INTO samples(host,mac,at,rx,status,tx,upload) VALUES(?,?,?,?,?,?,?)
     ON CONFLICT(host,mac,at) DO UPDATE SET rx=excluded.rx,status=excluded.status,tx=excluded.tx,upload=excluded.upload`);
@@ -357,6 +359,22 @@ function openStore(path) {
     recover.run(status, host, mac, now - 15 * 60000, status, status);
   }
 
+  function deleteExpiredLogs(now = Date.now()) {
+    const cutoff = now - RETENTION_DAYS * day;
+    sql('DELETE FROM samples WHERE at<?').run(cutoff);
+    sql('DELETE FROM alarms WHERE until IS NOT NULL AND until<?').run(cutoff);
+    sql('DELETE FROM audit WHERE at<?').run(cutoff);
+    sql('DELETE FROM sessions WHERE expires<?').run(now);
+  }
+
+  function pruneOldLogs(now = Date.now()) {
+    deleteExpiredLogs(now);
+    if (now - lastCleanup >= 3600000) {
+      lastCleanup = now;
+      try { db.exec('PRAGMA wal_checkpoint(PASSIVE); PRAGMA optimize;'); } catch {}
+    }
+  }
+
   function sample(devices, pppoe) {
     const now = Date.now();
     const at = Math.floor(now / 60000) * 60000;
@@ -371,13 +389,16 @@ function openStore(path) {
           upsert.run(device.host, row.index + '/' + row.mac, at, row.rx, row.status, traffic.txBps ?? null, traffic.rxBps ?? null);
         }
       }
-      sql('DELETE FROM samples WHERE at<?').run(now - 8 * day);
-      sql('DELETE FROM sessions WHERE expires<?').run(now);
+      deleteExpiredLogs(now);
       db.exec('COMMIT');
       lastMinute = at;
     } catch (error) {
       db.exec('ROLLBACK');
       throw error;
+    }
+    if (now - lastCleanup >= 3600000) {
+      lastCleanup = now;
+      try { db.exec('PRAGMA wal_checkpoint(PASSIVE); PRAGMA optimize;'); } catch {}
     }
   }
 
@@ -407,13 +428,14 @@ function openStore(path) {
     }
   }
 
-  // Initial sync attempt
+  // Prune logs older than 7 days on startup and attempt initial cloud sync
+  try { pruneOldLogs(Date.now()); } catch {}
   void syncFromCloud();
 
   return {
     hasAdmin, createUser, updateUserPassword, deleteUser, login, session, logout, recordPoll, recordRecovery, sample, rxBaselineMap,
     hasPin, setPin, loginPin, getRouterConfig, setRouterConfig, getRouterConfigs, setRouterConfigs, syncFromCloud,
-    saveOltCache, loadOltCache,
+    saveOltCache, loadOltCache, pruneOldLogs,
     onuState: (host, index, mac) => getOnuState.get(host, index, mac) ?? null,
     retireOlt(host) {
       sql('DELETE FROM onu_state WHERE host=?').run(host);
@@ -430,13 +452,18 @@ function openStore(path) {
       clear.run(Date.now(), 'onu:' + host + '/' + mac);
     },
     users: () => sql('SELECT username,role FROM users ORDER BY role,username').all(),
-    alarms: () => sql('SELECT * FROM alarms ORDER BY until IS NOT NULL,id DESC LIMIT 250').all(),
+    alarms: () => sql('SELECT * FROM alarms ORDER BY until IS NOT NULL,id DESC LIMIT 500').all(),
     async audits() {
       try {
-        const cloudLog = await supabase.getAuditLog(250);
+        const cloudLog = await supabase.getAuditLog(500);
         if (Array.isArray(cloudLog) && cloudLog.length > 0) return cloudLog;
       } catch {}
-      return sql('SELECT * FROM audit ORDER BY id DESC LIMIT 250').all();
+      return sql('SELECT * FROM audit ORDER BY id DESC LIMIT 500').all();
+    },
+    recordAction(username, operation, target = '', detail = null, outcome = 'sent') {
+      const at = Date.now();
+      return sql("INSERT INTO audit(at,username,host,mac,outcome,recovery,operation,client_name,onu_index) VALUES(?,?,?,?,?,'done',?,?,NULL)")
+        .run(at, username || 'system', target || '', '', outcome, operation, detail || null).lastInsertRowid;
     },
     history(host, mac, days, index, includeLegacy = true) {
       const key = index ? index + '/' + mac : mac;
