@@ -1,0 +1,18 @@
+{
+  "appId": "id.momonet.nms.probe",
+  "appName": "ADT Monitoring",
+  "webDir": "www",
+  "server": {
+    "url": "https://monitoring.brayenkenzi.my.id",
+    "cleartext": true,
+    "errorPath": "error.html",
+    "allowNavigation": [
+      "monitoring.brayenkenzi.my.id",
+      "10.10.10.7",
+      "10.10.10.7:*"
+    ]
+  },
+  "android": {
+    "loggingBehavior": "none"
+  }
+}

@@ -23,3 +23,10 @@ android-app/panduan-teknisi/
 android-app/.local-pc-data/
 .agents/
 android-app/.agents/
+android-client/node_modules/
+android-client/android/.gradle/
+android-client/android/build/
+android-client/android/app/build/
+android-client/android/capacitor-cordova-android-plugins/build/
+android-client/android/app/src/main/assets/public/
+android-client/android/app/src/main/assets/capacitor.config.json
