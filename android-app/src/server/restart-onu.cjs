@@ -303,6 +303,25 @@ function selectTarget(targets, profile, index, deleting, duplicateInInventory) {
   return scoped.length === 1 ? scoped[0] : null;
 }
 
+function isSameOriginAllowed(req, bindHost, port) {
+  const isLoopbackBind = bindHost === '127.0.0.1';
+  const sameHost = Boolean(req.headers.host && (
+    req.headers.origin === 'http://' + req.headers.host ||
+    req.headers.origin === 'https://' + req.headers.host
+  ));
+  const localRemote = req.socket.remoteAddress === '127.0.0.1' ||
+    req.socket.remoteAddress === '::ffff:127.0.0.1' ||
+    req.socket.remoteAddress === '::1';
+  if ((isLoopbackBind && (!localRemote ||
+      !['127.0.0.1', 'localhost'].some(h => req.headers.host === h + ':' + port &&
+        req.headers.origin === 'http://' + req.headers.host))) ||
+      (!isLoopbackBind && !sameHost) ||
+      req.headers['content-type'] !== 'application/json') {
+    return false;
+  }
+  return true;
+}
+
 async function restartRequest(req, res, devices, bindHost, port, audit, deleting = false) {
   let auditId;
   let attempted = false;
@@ -319,20 +338,8 @@ async function restartRequest(req, res, devices, bindHost, port, audit, deleting
     }
   }
 
-  const isLoopbackBind = bindHost === '127.0.0.1';
-  const sameHost = Boolean(req.headers.host && (
-    req.headers.origin === 'http://' + req.headers.host ||
-    req.headers.origin === 'https://' + req.headers.host
-  ));
-  const localRemote = req.socket.remoteAddress === '127.0.0.1' ||
-    req.socket.remoteAddress === '::ffff:127.0.0.1' ||
-    req.socket.remoteAddress === '::1';
-  if ((isLoopbackBind && (!localRemote ||
-      !['127.0.0.1', 'localhost'].some(h => req.headers.host === h + ':' + port &&
-        req.headers.origin === 'http://' + req.headers.host))) ||
-      (!isLoopbackBind && !sameHost) ||
-      req.headers['content-type'] !== 'application/json') {
-    return reply(403, isLoopbackBind
+  if (!isSameOriginAllowed(req, bindHost, port)) {
+    return reply(403, bindHost === '127.0.0.1'
       ? 'Restart langsung hanya tersedia dari dashboard lokal.'
       : 'Permintaan restart lintas origin ditolak.');
   }
@@ -437,6 +444,7 @@ async function restartRequest(req, res, devices, bindHost, port, audit, deleting
 module.exports = {
   canRestart,
   restartRequest,
+  isSameOriginAllowed,
   isHsgqDevice,
   decodeHsgqIndex,
 };

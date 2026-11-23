@@ -12,6 +12,7 @@ const { createNmsServer } = require('./server/server.cjs');
 const { pppoeView } = require('./server/pppoe.cjs');
 const { encodeWord, encodeSentence, runRosApiCommands, probeRosApi, closeAllRosApiSessions } = require('./server/ros-api.cjs');
 const { canRestart, restartRequest, isHsgqDevice, decodeHsgqIndex } = require('./server/restart-onu.cjs');
+const genieacs = require('./server/genieacs.cjs');
 
 test('store initializes, handles admin setup, session, pin, and settings', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'momo-test-'));
@@ -983,5 +984,186 @@ test('LAN server mode allows same-origin restartRequest and blocks cross-origin 
     lanProxy.close();
     mockHsgq.closeAllConnections?.();
     mockHsgq.close();
+  }
+});
+
+test('GenieACS realtime auto-summon, active clients parsing, and Wi-Fi SSID/password update with audit work cleanly', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'momo-genieacs-'));
+  let nms;
+  const nbiCalls = [];
+
+  let currentSsid = 'RUMAH-LAMA';
+  let currentPass = 'sandilama123';
+  const mockGenie = http.createServer(async (req, res) => {
+    const u = new URL(req.url, 'http://127.0.0.1');
+    let raw = '';
+    for await (const c of req) raw += c;
+    const body = raw ? JSON.parse(raw) : null;
+    nbiCalls.push({ method: req.method, path: u.pathname, query: u.search, body });
+
+    const devDoc = {
+      _id: 'F86CE1-G99%2DXPON-GGCL00001111',
+      _deviceId: { _Manufacturer: 'GGCL', _ProductClass: 'G99-XPON', _SerialNumber: 'GGCL00001111' },
+      _lastInform: '2026-11-23T13:55:00.000Z',
+      InternetGatewayDevice: {
+        WANDevice: {
+          1: { WANConnectionDevice: { 2: { WANPPPConnection: { 1: { Username: { _value: 'pelanggan-01' }, MACAddress: { _value: 'F8:6C:E1:00:11:12' } } } } } },
+        },
+        LANDevice: {
+          1: {
+            WLANConfiguration: {
+              1: {
+                SSID: { _value: currentSsid },
+                TotalAssociations: { _value: 2 },
+                KeyPassphrase: { _value: currentPass },
+                AssociatedDevice: {
+                  1: {
+                    AssociatedDeviceMACAddress: { _value: 'AA:11:22:33:44:55' },
+                    AssociatedDeviceIPAddress: { _value: '192.168.1.10' },
+                    RSSI: { _value: -54 },
+                  },
+                },
+              },
+            },
+            Hosts: {
+              Host: {
+                1: {
+                  Active: { _value: true },
+                  HostName: { _value: 'Galaxy-A55' },
+                  IPAddress: { _value: '192.168.1.10' },
+                  MACAddress: { _value: 'AA:11:22:33:44:55' },
+                  InterfaceType: { _value: '802.11' },
+                },
+                2: {
+                  Active: { _value: true },
+                  HostName: { _value: 'Laptop-Kerja' },
+                  IPAddress: { _value: '192.168.1.11' },
+                  MACAddress: { _value: 'BB:11:22:33:44:66' },
+                  InterfaceType: { _value: 'Ethernet' },
+                },
+                3: {
+                  Active: { _value: false },
+                  HostName: { _value: 'HP-Lama-Offline' },
+                  IPAddress: { _value: '192.168.1.12' },
+                  MACAddress: { _value: 'CC:11:22:33:44:77' },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    if (req.method === 'GET' && u.pathname === '/devices') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([devDoc]));
+      return;
+    }
+
+    if (req.method === 'POST' && u.pathname.endsWith('/tasks')) {
+      if (body?.name === 'setParameterValues') {
+        for (const [p, v] of body.parameterValues || []) {
+          if (p.endsWith('.SSID')) currentSsid = v;
+          if (p.endsWith('.KeyPassphrase')) currentPass = v;
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ _id: 'task-1', ...body }));
+      return;
+    }
+
+    res.writeHead(404).end();
+  });
+
+  await new Promise(r => mockGenie.listen(0, '127.0.0.1', r));
+  const geniePort = mockGenie.address().port;
+  const genieUrl = 'http://127.0.0.1:' + geniePort;
+
+  try {
+    // 1. Direct unit validation on genieacs helper
+    const modem = await genieacs.getClientModem({
+      mac: 'F8:6C:E1:00:11:11', // tests 10-char prefix match too
+      summon: true,
+      baseUrl: genieUrl,
+    });
+    assert.equal(modem.configured, true);
+    assert.equal(modem.found, true);
+    assert.equal(modem.summonResult.live, true);
+    assert.equal(modem.device.ssid, 'RUMAH-LAMA');
+    assert.equal(modem.device.activeClientsCount, 2);
+    assert.equal(modem.device.clients.length, 2); // inactive host excluded; merged RSSI from AssociatedDevice
+    assert.equal(modem.device.clients[0].rssi, -54);
+    assert.equal(modem.device.clients[0].name, 'Galaxy-A55');
+
+    await assert.rejects(
+      genieacs.updateWifi('F86CE1-G99%2DXPON-GGCL00001111', { ssid: 'OK', password: '123', baseUrl: genieUrl }),
+      /8 sampai 63 karakter/i
+    );
+
+    // 2. End-to-end HTTP routes + audit log via createNmsServer
+    nms = createNmsServer(dir, {
+      port: 0,
+      genieacsUrl: genieUrl,
+      seedOlts: [{ name: 'OLT TEST', host: '192.168.100.2', community: 'public', port: 161 }],
+    });
+    const dev = nms.devices[0];
+    dev.updated = new Date().toISOString();
+    dev.rows = [{ index: '16777473', name: 'PELANGGAN-01', mac: 'F8:6C:E1:00:11:11', status: 'Online', rx: -18.5 }];
+    const port = await nms.start();
+
+    const setupRes = await fetch('http://127.0.0.1:' + port + '/api/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'password123' }),
+    });
+    const cookie = (setupRes.headers.get('set-cookie') || '').split(';')[0];
+
+    const getRes = await fetch('http://127.0.0.1:' + port + '/api/genieacs/device?host=192.168.100.2&mac=F8:6C:E1:00:11:11&index=16777473&force=1', {
+      headers: { Cookie: cookie },
+    });
+    assert.equal(getRes.status, 200);
+    const getBody = await getRes.json();
+    assert.equal(getBody.found, true);
+    assert.equal(getBody.device.ssid, 'RUMAH-LAMA');
+
+    // CSRF rejection
+    const badWifi = await fetch('http://127.0.0.1:' + port + '/api/genieacs/wifi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://evil.example' },
+      body: JSON.stringify({ host: '192.168.100.2', mac: 'F8:6C:E1:00:11:11', index: '16777473', ssid: 'NEW' }),
+    });
+    assert.equal(badWifi.status, 403);
+
+    // Valid SSID & Password change
+    const wifiRes = await fetch('http://127.0.0.1:' + port + '/api/genieacs/wifi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://127.0.0.1:' + port },
+      body: JSON.stringify({
+        host: '192.168.100.2',
+        mac: 'F8:6C:E1:00:11:11',
+        index: '16777473',
+        ssid: 'RUMAH-BARU',
+        password: 'sandibaru456',
+      }),
+    });
+    assert.equal(wifiRes.status, 200);
+    const wifiBody = await wifiRes.json();
+    assert.equal(wifiBody.live, true);
+    assert.equal(currentSsid, 'RUMAH-BARU');
+    assert.equal(currentPass, 'sandibaru456');
+
+    // Audit recorded without plaintext password
+    const auditRes = await fetch('http://127.0.0.1:' + port + '/api/audit', {
+      headers: { Cookie: cookie },
+    });
+    const audits = await auditRes.json();
+    assert.ok(audits.some(a => a.operation === 'wifi' && a.outcome === 'sent' && a.mac === 'F8:6C:E1:00:11:11'));
+    assert.equal(JSON.stringify(audits).includes('sandibaru456'), false);
+  } finally {
+    try { nms?.stop(); } catch {}
+    mockGenie.closeAllConnections?.();
+    mockGenie.close();
+    await new Promise(r => setTimeout(r, 100));
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 });

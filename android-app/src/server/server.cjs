@@ -6,8 +6,9 @@ const snmp = require('net-snmp');
 
 const { openStore } = require('./store.cjs');
 const { createRoutes, json } = require('./routes.cjs');
-const { canRestart, restartRequest } = require('./restart-onu.cjs');
+const { canRestart, restartRequest, isSameOriginAllowed } = require('./restart-onu.cjs');
 const routerModule = require('./pppoe.cjs');
+const genieacs = require('./genieacs.cjs');
 const { page, operations, worker, logo } = require('./static-assets.cjs');
 const { supabase } = require('./supabase.cjs');
 
@@ -43,6 +44,7 @@ function detectVendor(device) {
 
 function createNmsServer(dataDir, options = {}) {
   const bindHost = options.bindHost || process.env.NMS_HOST || '127.0.0.1';
+  const genieacsUrl = options.genieacsUrl ?? process.env.GENIEACS_URL;
   const dbPath = join(dataDir, 'nms-data.sqlite');
   const configPath = join(dataDir, 'olts.json');
   const store = openStore(dbPath);
@@ -720,6 +722,90 @@ function createNmsServer(dataDir, options = {}) {
             void poll(device);
           },
         }, deleting);
+      } else if (req.method === 'GET' && url.pathname === '/api/genieacs/device') {
+        if (!genieacs.isConfigured(genieacsUrl)) {
+          json(res, 200, { configured: false, found: false });
+          return;
+        }
+        const host = url.searchParams.get('host');
+        const mac = url.searchParams.get('mac');
+        const index = url.searchParams.get('index');
+        const client = host && mac ? clients.find(host, mac, index) : null;
+        if (!client) {
+          json(res, 404, { message: 'Registrasi ONU tidak ditemukan atau MAC ambigu.' });
+          return;
+        }
+        const summon = url.searchParams.get('summon') !== '0';
+        const force = url.searchParams.get('force') === '1';
+        try {
+          const data = await genieacs.getClientModem({
+            pppoeUsername: client.pppoe?.username,
+            mac: client.mac,
+            summon,
+            force,
+            baseUrl: genieacsUrl,
+          });
+          json(res, 200, data);
+        } catch (err) {
+          json(res, 502, { message: err.message || 'Gagal menghubungi GenieACS.' });
+        }
+      } else if (req.method === 'POST' && url.pathname === '/api/genieacs/wifi') {
+        if (!isSameOriginAllowed(req, bindHost, activePort)) {
+          json(res, 403, { message: 'Permintaan lintas origin ditolak.' });
+          return;
+        }
+        if (!genieacs.isConfigured(genieacsUrl)) {
+          json(res, 501, { message: 'GenieACS belum dikonfigurasi di server.' });
+          return;
+        }
+        let payload;
+        try {
+          let raw = '';
+          for await (const chunk of req) {
+            raw += chunk;
+            if (raw.length > 4096) return json(res, 413, { message: 'Permintaan terlalu besar.' });
+          }
+          payload = JSON.parse(raw);
+        } catch {
+          json(res, 400, { message: 'Data Wi-Fi tidak valid.' });
+          return;
+        }
+        const { host, mac, index, ssid, password } = payload ?? {};
+        const client = host && mac ? clients.find(host, mac, index) : null;
+        if (!client) {
+          json(res, 404, { message: 'Pelanggan tidak ditemukan.' });
+          return;
+        }
+        let matched;
+        try {
+          matched = await genieacs.findDevice({
+            pppoeUsername: client.pppoe?.username,
+            mac: client.mac,
+            baseUrl: genieacsUrl,
+          });
+        } catch (err) {
+          json(res, 502, { message: err.message || 'Gagal menghubungi GenieACS.' });
+          return;
+        }
+        if (!matched) {
+          json(res, 404, { message: 'Modem pelanggan belum terdaftar di GenieACS.' });
+          return;
+        }
+        const auditId = store.beginAudit(user.username, host, mac, 'wifi', findClientName(host, mac, index), index);
+        try {
+          const result = await genieacs.updateWifi(matched._id, { ssid, password, baseUrl: genieacsUrl });
+          store.finishAudit(auditId, 200, true);
+          json(res, 200, {
+            ...result,
+            message: result.live
+              ? 'Pengaturan Wi-Fi berhasil dikirim langsung ke modem.'
+              : 'Perintah ubah Wi-Fi masuk antrean (diterapkan saat modem inform).',
+          });
+        } catch (err) {
+          const code = err.status || 502;
+          store.finishAudit(auditId, code, code >= 500);
+          json(res, code, { message: err.message || 'Gagal mengubah pengaturan Wi-Fi.' });
+        }
       } else if (req.method === 'GET' && ['/operations.js', '/nms-worker.js'].includes(req.url)) {
         res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
         res.end(req.url === '/operations.js' ? operations : worker);

@@ -165,12 +165,13 @@ const nmsOperations = (() => {
       accounts.replaceChildren(users.length ? userList : element('p', 'Belum ada akun.'));
       const outcome = { sent:'Perintah diterima', rejected:'Ditolak', uncertain:'Hasil belum pasti', request:'Permintaan tercatat' };
       const recovery = { waiting:'Pemulihan belum teramati', down:'Teramati offline', online:'Kembali online' };
+      const opLabel = op => op === 'delete' ? 'Hapus ONU' : op === 'wifi' ? 'Ubah Wi-Fi' : 'Restart Modem';
       audit.replaceChildren(items(records, e => [
-        time(e.at), e.operation === 'delete' ? 'Hapus ONU' : 'Restart Modem',
+        time(e.at), opLabel(e.operation),
         e.client_name ? 'Klien: ' + e.client_name : e.inventory_name ? 'Klien: ' + e.inventory_name + ' (nama saat ini)' : 'Nama klien belum diketahui',
         'Oleh ' + e.username, e.host, e.mac,
         e.operation === 'delete' && e.outcome === 'sent' ? 'Terhapus di OLT' : outcome[e.outcome],
-        e.operation !== 'delete' && ['sent', 'uncertain'].includes(e.outcome) ? recovery[e.recovery] : '',
+        e.operation === 'reboot' && ['sent', 'uncertain'].includes(e.outcome) ? recovery[e.recovery] : '',
       ].filter(Boolean).join(' · '), 'Belum ada tindakan ONU.'));
     };
     form.addEventListener('submit', async event => {
@@ -712,11 +713,152 @@ const nmsOperations = (() => {
     return list;
   }
 
+  function createGenieAcsPanel(row) {
+    const box = element('section', null, 'genieacs-box');
+    const head = element('div', null, 'genieacs-head');
+    const heading = element('h3', 'Modem Wi-Fi & Klien (GenieACS)');
+    const resummonBtn = element('button', '🔄 Summon Ulang', 'restart-button');
+    resummonBtn.type = 'button';
+    head.append(heading, resummonBtn);
+    const body = element('div');
+    body.append(element('p', 'Menghubungi modem (auto-summon GenieACS)…', 'genieacs-meta'));
+    box.replaceChildren(head, body);
+
+    async function loadModem(force = false, notice = '') {
+      resummonBtn.disabled = true;
+      body.replaceChildren(element('p', notice || (force ? 'Mengirim ulang summon ke modem…' : 'Menghubungi modem (auto-summon GenieACS)…'), 'genieacs-meta'));
+      try {
+        const res = await api('/api/genieacs/device?' + new URLSearchParams({
+          host: row.source.host,
+          mac: row.mac,
+          index: row.index,
+          summon: '1',
+          force: force ? '1' : '0',
+        }));
+        if (!res.configured) {
+          box.hidden = true;
+          return;
+        }
+        box.hidden = false;
+        if (!res.found || !res.device) {
+          body.replaceChildren(element('p', 'Modem belum terdaftar atau belum terhubung ke GenieACS (TR-069).', 'genieacs-meta'));
+          return;
+        }
+        const dev = res.device;
+        const statusText = res.summonResult?.live ? 'Realtime (Summon OK)'
+          : res.summonResult?.cached ? 'Data terbaru (<15 detik)'
+          : res.summonResult?.queued ? 'Antrean (menunggu Inform modem)'
+          : 'Data terakhir tersimpan';
+        const info = element('p', [
+          [dev.manufacturer, dev.productClass, dev.serialNumber].filter(Boolean).join(' · '),
+          statusText,
+          dev.lastInform ? 'Inform ' + time(dev.lastInform) : null,
+        ].filter(Boolean).join(' · '), 'genieacs-meta');
+
+        const summary = element('dl', null, 'client-facts');
+        const addStat = (k, v) => {
+          const item = element('div');
+          item.append(element('dt', k), element('dd', v));
+          summary.append(item);
+        };
+        addStat('SSID Wi-Fi saat ini', dev.ssid || '—');
+        addStat('User aktif terhubung', String(dev.activeClientsCount ?? 0) + ' perangkat');
+
+        const clientList = element('ul', null, 'genieacs-clients');
+        for (const c of dev.clients || []) {
+          const detail = [
+            c.name || 'Perangkat',
+            c.ip || null,
+            c.mac || null,
+            c.iface || null,
+            c.rssi != null ? c.rssi + ' dBm' : null,
+          ].filter(Boolean).join(' · ');
+          clientList.append(element('li', detail));
+        }
+        const clientsView = (dev.clients?.length)
+          ? clientList
+          : element('p', dev.activeClientsCount > 0
+              ? 'Modem melaporkan ' + dev.activeClientsCount + ' perangkat aktif, namun detail daftar Host belum dikirim firmware modem.'
+              : 'Belum ada perangkat aktif tercatat.', 'genieacs-meta');
+
+        const form = element('form', null, 'genieacs-wifi-form');
+        const ssidLabel = element('label', 'Ubah Nama Wi-Fi (SSID)');
+        const ssidInput = element('input');
+        Object.assign(ssidInput, { type: 'text', maxLength: 32, value: dev.ssid || '', placeholder: 'Nama SSID baru' });
+        ssidLabel.append(ssidInput);
+
+        const passLabel = element('label', 'Password Wi-Fi Baru (8–63 karakter, kosongkan jika tidak diubah)');
+        const passRow = element('div', null, 'genieacs-wifi-row');
+        const passInput = element('input');
+        Object.assign(passInput, { type: 'password', minLength: 8, maxLength: 63, autocomplete: 'new-password', placeholder: 'Minimal 8 karakter' });
+        const toggleBtn = element('button', 'Lihat', 'restart-button');
+        toggleBtn.type = 'button';
+        toggleBtn.onclick = () => {
+          const show = passInput.type === 'password';
+          passInput.type = show ? 'text' : 'password';
+          toggleBtn.textContent = show ? 'Sembunyi' : 'Lihat';
+        };
+        passRow.append(passInput, toggleBtn);
+        passLabel.append(passRow);
+
+        const saveBtn = element('button', 'Simpan Wi-Fi', 'restart-button');
+        saveBtn.type = 'submit';
+        const statusMsg = element('p', notice || '', 'genieacs-meta');
+        statusMsg.setAttribute('role', 'status');
+        form.append(ssidLabel, passLabel, saveBtn, statusMsg);
+
+        form.onsubmit = async (event) => {
+          event.preventDefault();
+          const newSsid = ssidInput.value.trim();
+          const newPass = passInput.value;
+          if (!newSsid && !newPass) {
+            statusMsg.textContent = 'Isi SSID baru atau Password baru terlebih dahulu.';
+            return;
+          }
+          if (newPass && (newPass.length < 8 || newPass.length > 63)) {
+            statusMsg.textContent = 'Password Wi-Fi harus 8 sampai 63 karakter.';
+            return;
+          }
+          saveBtn.disabled = true;
+          statusMsg.textContent = 'Mengirim perubahan Wi-Fi ke modem…';
+          try {
+            const out = await api('/api/genieacs/wifi', {
+              host: row.source.host,
+              mac: row.mac,
+              index: row.index,
+              ssid: newSsid || undefined,
+              password: newPass || undefined,
+            });
+            passInput.value = '';
+            const doneMsg = out.message || 'Pengaturan Wi-Fi dikirim.';
+            statusMsg.textContent = doneMsg;
+            if (out.live) void loadModem(true, doneMsg);
+          } catch (err) {
+            statusMsg.textContent = err.message || 'Gagal mengubah pengaturan Wi-Fi.';
+          } finally {
+            saveBtn.disabled = false;
+          }
+        };
+
+        body.replaceChildren(info, summary, clientsView, form);
+      } catch (err) {
+        body.replaceChildren(element('p', err.message || 'Gagal menghubungi GenieACS.', 'genieacs-meta'));
+      } finally {
+        resummonBtn.disabled = false;
+      }
+    }
+
+    resummonBtn.onclick = () => void loadModem(true);
+    void loadModem(false);
+    return box;
+  }
+
   async function showHistory(row, back) {
     const target = open('Detail Pelanggan');
     const identity = element('p', (row.name || row.mac) + ' · ' + row.mac + ' · ' + row.source.name);
     const facts = element('div');
     const actions = element('div', null, 'client-actions');
+    const genieBox = createGenieAcsPanel(row);
     const range = element('select');
     range.add(new Option('1 jam', 'hour'));
     range.add(new Option('24 jam', '1'));
@@ -724,7 +866,7 @@ const nmsOperations = (() => {
     range.value = '1';
     range.setAttribute('aria-label', 'Rentang riwayat');
     const result = element('div');
-    target.replaceChildren(identity, facts, actions, range, result);
+    target.replaceChildren(identity, facts, actions, genieBox, range, result);
     if (back) {
       const returnButton = element('button', 'Kembali ke kandidat', 'restart-button');
       returnButton.type = 'button';
@@ -757,7 +899,7 @@ const nmsOperations = (() => {
         const outcomes = { sent:'Perintah diterima', rejected:'Ditolak', uncertain:'Hasil belum pasti', request:'Permintaan tercatat' };
         const timeline = [...changes, ...(activity ?? []).map(event => ({
           at: event.at,
-          text: (event.operation === 'delete' ? 'Hapus ONU' : 'Restart Modem') + ' · ' + event.username +
+          text: (event.operation === 'delete' ? 'Hapus ONU' : event.operation === 'wifi' ? 'Ubah Wi-Fi' : 'Restart Modem') + ' · ' + event.username +
             ' · ' + (outcomes[event.outcome] ?? event.outcome) + (event.recovery === 'online' ? ' · Kembali online' : ''),
         }))].sort((a, b) => b.at - a.at).slice(0, 30);
         const traffic = data.map(r => ({ ...r, tx: r.tx == null ? null : r.tx / 1e6,
