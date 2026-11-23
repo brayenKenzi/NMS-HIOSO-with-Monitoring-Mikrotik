@@ -42,6 +42,7 @@ function detectVendor(device) {
 }
 
 function createNmsServer(dataDir, options = {}) {
+  const bindHost = options.bindHost || process.env.NMS_HOST || '127.0.0.1';
   const dbPath = join(dataDir, 'nms-data.sqlite');
   const configPath = join(dataDir, 'olts.json');
   const store = openStore(dbPath);
@@ -473,7 +474,7 @@ function createNmsServer(dataDir, options = {}) {
     return {
       ...row,
       pppoe: pppoe?.match(row, device.host),
-      source: { host: device.host, name: device.name, directRestart: canRestart(device, '127.0.0.1') },
+      source: { host: device.host, name: device.name, directRestart: canRestart(device, bindHost) },
       stale: Boolean(device.pollFailed || !device.updated || Date.now() - Date.parse(device.updated) > 240000),
       sampledAt: device.updated,
       duplicate: device.rows.filter(item => item.mac === row.mac).length > 1,
@@ -700,7 +701,7 @@ function createNmsServer(dataDir, options = {}) {
             pppoe: pppoe.status,
             networkUnreachable,
             hasAdminCreds: Boolean(adminUser && adminPassword),
-            directRestart: canRestart(device, '127.0.0.1'),
+            directRestart: canRestart(device, bindHost),
           };
         })));
       } else if (req.method === 'POST' && ['/api/onu/restart', '/api/onu/delete'].includes(req.url)) {
@@ -709,7 +710,7 @@ function createNmsServer(dataDir, options = {}) {
           json(res, 403, { message: 'Hapus ONU khusus admin.' });
           return;
         }
-        await restartRequest(req, res, devices, '127.0.0.1', activePort, {
+        await restartRequest(req, res, devices, bindHost, activePort, {
           begin: (host, mac, operation, index) => store.beginAudit(user.username, host, mac, operation, findClientName(host, mac, index), index),
           finish: store.finishAudit,
           watch: monitorRestart,
@@ -745,7 +746,7 @@ function createNmsServer(dataDir, options = {}) {
         if (err.code === 'EADDRINUSE' && activePort !== 0) {
           console.warn('Port ' + activePort + ' in use, falling back to random port...');
           activePort = 0;
-          server.listen(0, '127.0.0.1');
+          server.listen(0, bindHost);
         } else {
           reject(err);
         }
@@ -753,7 +754,7 @@ function createNmsServer(dataDir, options = {}) {
 
       async function onListen(done) {
         activePort = server.address().port;
-        console.log('NMS Server listening on http://127.0.0.1:' + activePort);
+        console.log('NMS Server listening on http://' + bindHost + ':' + activePort);
         void pollAll();
         void routerModule.pollPppoe();
         initialSyncPromise = (async () => {
@@ -776,7 +777,7 @@ function createNmsServer(dataDir, options = {}) {
         done(activePort);
       }
 
-      server.listen(activePort, '127.0.0.1');
+      server.listen(activePort, bindHost);
     });
   }
 

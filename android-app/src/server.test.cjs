@@ -883,3 +883,105 @@ onuForm.onuId.value = onuno;
     hiosoServer.close();
   }
 });
+
+test('LAN server mode allows same-origin restartRequest and blocks cross-origin CSRF', async () => {
+  assert.equal(canRestart({ host: '192.168.100.2', vendor: 'hsgq', adminUser: 'root', adminPassword: 'secret' }, '0.0.0.0'), true);
+  assert.equal(canRestart({ host: '192.168.100.2', vendor: 'hsgq', adminUser: 'root', adminPassword: 'secret' }, '10.10.10.7'), true);
+
+  const validToken = 'tok-lan-123';
+  const expectedKey = crypto.createHash('md5').update('root:admin').digest('hex');
+  const mockHsgq = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const c of req) raw += c;
+    const body = raw ? JSON.parse(raw) : null;
+    if (req.url === '/userlogin?form=login') {
+      if (body?.param?.name === 'root' && body?.param?.key === expectedKey) {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'x-token': validToken });
+        res.end(JSON.stringify({ code: 1 }));
+      } else {
+        res.writeHead(401).end();
+      }
+      return;
+    }
+    if (req.url === '/onutable') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        code: 1,
+        data: [{ port_id: 1, onu_id: 1, onu_name: 'LAN-ONU', macaddr: '44:13:d0:2b:12:d5', status: 'Online' }],
+      }));
+      return;
+    }
+    if (req.url === '/userlogin?form=logout') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ code: 1 }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+
+  await new Promise(r => mockHsgq.listen(0, '127.0.0.1', r));
+  const mockPort = mockHsgq.address().port;
+
+  const dev = {
+    name: 'LAN HSGQ',
+    host: '127.0.0.1',
+    webPort: mockPort,
+    vendor: 'hsgq',
+    adminUser: 'root',
+    adminPassword: 'admin',
+    updated: new Date().toISOString(),
+    rows: [{ index: '16777473', name: 'LAN-ONU', mac: '44:13:D0:2B:12:D5', status: 'Online', rx: -17 }],
+  };
+
+  const lanProxy = http.createServer(async (req, res) => {
+    await restartRequest(req, res, [dev], '0.0.0.0', lanProxy.address().port, {
+      begin: () => 1,
+      finish: () => {},
+    }, false);
+  });
+  await new Promise(r => lanProxy.listen(0, '127.0.0.1', r));
+  const srvPort = lanProxy.address().port;
+
+  const lanPost = (headers, payload) => new Promise((resolve, reject) => {
+    const raw = JSON.stringify(payload);
+    const req = http.request({
+      host: '127.0.0.1',
+      port: srvPort,
+      path: '/api/onu/restart',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(raw),
+        ...headers,
+      },
+    }, async (res) => {
+      let text = '';
+      for await (const c of res) text += c;
+      resolve({ status: res.statusCode, json: () => JSON.parse(text) });
+    });
+    req.on('error', reject);
+    req.end(raw);
+  });
+
+  try {
+    // Same-origin over LAN hostname passes
+    const okRes = await lanPost(
+      { Host: '10.10.10.7:' + srvPort, Origin: 'http://10.10.10.7:' + srvPort },
+      { host: '127.0.0.1', index: '16777473', mac: '44:13:D0:2B:12:D5', action: 'verify' }
+    );
+    assert.equal(okRes.status, 200);
+    assert.match(okRes.json().message, /PON 1:1/);
+
+    // Cross-origin CSRF rejected with 403
+    const csrfRes = await lanPost(
+      { Host: '10.10.10.7:' + srvPort, Origin: 'http://evil.example' },
+      { host: '127.0.0.1', index: '16777473', mac: '44:13:D0:2B:12:D5', action: 'verify' }
+    );
+    assert.equal(csrfRes.status, 403);
+  } finally {
+    lanProxy.closeAllConnections?.();
+    lanProxy.close();
+    mockHsgq.closeAllConnections?.();
+    mockHsgq.close();
+  }
+});

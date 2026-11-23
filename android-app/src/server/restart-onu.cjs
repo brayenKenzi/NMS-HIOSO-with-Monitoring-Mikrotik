@@ -31,7 +31,9 @@ const inFlight = new Set();
 
 function canRestart(deviceOrHost, bindHost) {
   const profile = getProfile(deviceOrHost);
-  return bindHost === '127.0.0.1' && Boolean(profile?.username && profile.password);
+  const hostAllowed = bindHost === '127.0.0.1' || bindHost === '0.0.0.0' ||
+    /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(bindHost || '');
+  return hostAllowed && Boolean(profile?.username && profile.password);
 }
 
 function isHsgqDevice(device) {
@@ -317,11 +319,22 @@ async function restartRequest(req, res, devices, bindHost, port, audit, deleting
     }
   }
 
-  if (req.socket.remoteAddress !== '127.0.0.1' ||
-      !['127.0.0.1', 'localhost'].some(host => req.headers.host === host + ':' + port &&
-        req.headers.origin === 'http://' + req.headers.host) ||
+  const isLoopbackBind = bindHost === '127.0.0.1';
+  const sameHost = Boolean(req.headers.host && (
+    req.headers.origin === 'http://' + req.headers.host ||
+    req.headers.origin === 'https://' + req.headers.host
+  ));
+  const localRemote = req.socket.remoteAddress === '127.0.0.1' ||
+    req.socket.remoteAddress === '::ffff:127.0.0.1' ||
+    req.socket.remoteAddress === '::1';
+  if ((isLoopbackBind && (!localRemote ||
+      !['127.0.0.1', 'localhost'].some(h => req.headers.host === h + ':' + port &&
+        req.headers.origin === 'http://' + req.headers.host))) ||
+      (!isLoopbackBind && !sameHost) ||
       req.headers['content-type'] !== 'application/json') {
-    return reply(403, 'Restart langsung hanya tersedia dari dashboard lokal.');
+    return reply(403, isLoopbackBind
+      ? 'Restart langsung hanya tersedia dari dashboard lokal.'
+      : 'Permintaan restart lintas origin ditolak.');
   }
 
   let data;
