@@ -8,7 +8,7 @@ const net = require('node:net');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { openStore } = require('./server/store.cjs');
-const { createNmsServer } = require('./server/server.cjs');
+const { createNmsServer, parseHiosoWebOverflow, fetchHiosoWebOverflow } = require('./server/server.cjs');
 const { pppoeView } = require('./server/pppoe.cjs');
 const { encodeWord, encodeSentence, runRosApiCommands, probeRosApi, closeAllRosApiSessions } = require('./server/ros-api.cjs');
 const { canRestart, restartRequest, isHsgqDevice, decodeHsgqIndex } = require('./server/restart-onu.cjs');
@@ -1089,7 +1089,10 @@ test('GenieACS realtime auto-summon, active clients parsing, and Wi-Fi SSID/pass
     assert.equal(modem.configured, true);
     assert.equal(modem.found, true);
     assert.equal(modem.summonResult.live, true);
-    assert.ok(nbiCalls.some(c => c.body?.name === 'getParameterValues'));
+    const gpvCall = nbiCalls.find(c => c.body?.name === 'getParameterValues');
+    assert.ok(gpvCall);
+    assert.ok(gpvCall.body.parameterNames.every(p => !p.endsWith('.')));
+    assert.ok(gpvCall.body.parameterNames.some(p => p.includes('.Hosts.Host.*.MACAddress')));
     assert.equal(nbiCalls.some(c => c.body?.name === 'refreshObject'), false);
     assert.equal(modem.device.ssid, 'RUMAH-LAMA');
     assert.equal(modem.device.activeClientsCount, 2);
@@ -1416,5 +1419,50 @@ test('HTTP endpoints /api/interfaces, /api/interfaces/history, and /charts.js en
     mockRouter.close();
     await new Promise(r => setTimeout(r, 100));
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('parseHiosoWebOverflow and fetchHiosoWebOverflow capture ONU IDs > 64 missing from HiOSO SNMP', async () => {
+  const sampleHtml = `<script>var ponOnuTable = new Array(
+  '0/2:64','DIMAS','F8:14:FE:87:60:AB','Down','0101','9127','5','0','30','0','695','--','--','--','--','--',
+  '0/2:65','ARZANKA','14:AD:CA:95:8B:F0','Up','0101','9127','5','5','30','0','982','45.00','3.00','12.00','2.12','-16.64',
+  '0/2:66','IKHA NITA','F8:14:FE:75:32:16','Up','0101','9127','5','5','30','0','1026','48.00','3.00','11.00','2.42','-19.55',
+  '0/2:67','RATU','28:C0:1B:5E:AE:7E','Down','0101','9127','5','0','30','0','568','--','--','--','--','--'
+);</script>`;
+
+  const parsed = parseHiosoWebOverflow(sampleHtml, 2);
+  assert.equal(parsed.length, 3);
+  assert.deepEqual(parsed[0], { index: '1.2.65', name: 'ARZANKA', mac: '14:AD:CA:95:8B:F0', status: 'Online', rx: -16.64 });
+  assert.deepEqual(parsed[1], { index: '1.2.66', name: 'IKHA NITA', mac: 'F8:14:FE:75:32:16', status: 'Online', rx: -19.55 });
+  assert.deepEqual(parsed[2], { index: '1.2.67', name: 'RATU', mac: '28:C0:1B:5E:AE:7E', status: 'Offline', rx: null });
+
+  const authHeader = 'Basic ' + Buffer.from('admin:admin').toString('base64');
+  const mockWeb = http.createServer((req, res) => {
+    if (req.headers.authorization !== authHeader) {
+      res.writeHead(401).end('Unauthorized');
+      return;
+    }
+    const u = new URL(req.url, 'http://127.0.0.1');
+    if (u.pathname === '/onuOverview.asp' && u.searchParams.get('oltponno') === '0/2') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(sampleHtml);
+      return;
+    }
+    res.writeHead(404).end();
+  });
+
+  await new Promise(r => mockWeb.listen(0, '127.0.0.1', r));
+  try {
+    const rows = await fetchHiosoWebOverflow({
+      host: '127.0.0.1',
+      webPort: mockWeb.address().port,
+      adminUser: 'admin',
+      adminPassword: 'admin',
+    }, [2]);
+    assert.equal(rows.length, 3);
+    assert.equal(rows.find(r => r.mac === 'F8:14:FE:75:32:16')?.name, 'IKHA NITA');
+  } finally {
+    mockWeb.closeAllConnections?.();
+    mockWeb.close();
   }
 });

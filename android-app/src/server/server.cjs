@@ -42,6 +42,94 @@ function detectVendor(device) {
   return 'hioso';
 }
 
+const WEB_OVERFLOW_REFRESH_MS = 30000;
+
+function parseHiosoWebOverflow(html, ponNum) {
+  const m = /var\s+(?:ponOnuTable|onutable)\s*=\s*new\s+Array\s*\(([\s\S]*?)\s*\);/i.exec(String(html || ''));
+  if (!m) return [];
+  const rows = [];
+  const seen = new Set();
+  for (const line of m[1].split(/\r?\n/)) {
+    const cells = [...line.matchAll(/'([^']*)'/g)].map(x => x[1]);
+    if (cells.length < 4) continue;
+    const idMatch = /^\d+(?:\/\d+)?\/(\d+):(\d+)$/.exec(cells[0].trim());
+    if (!idMatch) continue;
+    const p = Number(idMatch[1]);
+    const onu = Number(idMatch[2]);
+    if (ponNum != null && p !== ponNum) continue;
+    if (!Number.isInteger(onu) || onu <= 64) continue;
+    const index = '1.' + p + '.' + onu;
+    if (seen.has(index)) continue;
+    seen.add(index);
+    const macHex = cells[2].toUpperCase().replace(/[^0-9A-F]/g, '');
+    const mac = /^[0-9A-F]{12}$/.test(macHex) && macHex !== '000000000000' && macHex !== 'FFFFFFFFFFFF'
+      ? macHex.match(/../g).join(':')
+      : null;
+    const status = /^up$/i.test(cells[3].trim())
+      ? 'Online'
+      : /^(?:down|offline)$/i.test(cells[3].trim())
+        ? 'Offline'
+        : null;
+    const rawRx = cells.length >= 16 ? cells[15].trim() : '';
+    const rxNum = /^[+-]?\d+(?:\.\d+)?$/.test(rawRx) ? Number(rawRx) : null;
+    const rx = status === 'Online' && Number.isFinite(rxNum) && rxNum >= -60 && rxNum <= 15 ? rxNum : null;
+    rows.push({
+      index,
+      name: cells[1].trim(),
+      mac,
+      status,
+      rx,
+    });
+  }
+  return rows;
+}
+
+function hiosoHttpGet(device, path, timeoutMs = 7000) {
+  const port = Number(device.webPort) || 80;
+  const origin = 'http://' + device.host + (port === 80 ? '' : ':' + port);
+  return new Promise((resolve, reject) => {
+    const req = http.request(origin + path, {
+      method: 'GET',
+      auth: device.adminUser + ':' + device.adminPassword,
+      agent: false,
+      signal: AbortSignal.timeout(timeoutMs),
+    }, res => {
+      res.setEncoding('utf8');
+      let html = '';
+      res.on('data', c => {
+        html += c;
+        if (html.length > 1024 * 1024) req.destroy(new Error('Respons Web OLT terlalu besar.'));
+      });
+      res.on('error', reject);
+      res.on('end', () => resolve({ status: res.statusCode, html }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function fetchHiosoWebOverflow(device, saturatedPons) {
+  if (!device?.adminUser || !device?.adminPassword || !saturatedPons?.length) return [];
+  const out = [];
+  for (const ponNum of saturatedPons) {
+    let rows = [];
+    try {
+      const ov = await hiosoHttpGet(device, '/onuOverview.asp?oltponno=0/' + ponNum);
+      if (ov.status === 200 && !/ASP Error/i.test(ov.html)) {
+        rows = parseHiosoWebOverflow(ov.html, ponNum);
+      }
+      if (!rows.length) {
+        const cfg = await hiosoHttpGet(device, '/onuConfigOnuList.asp?oltponno=0/1/' + ponNum);
+        if (cfg.status === 200 && !/ASP Error/i.test(cfg.html)) {
+          rows = parseHiosoWebOverflow(cfg.html, ponNum);
+        }
+      }
+    } catch {}
+    out.push(...rows);
+  }
+  return out;
+}
+
 function createNmsServer(dataDir, options = {}) {
   const bindHost = options.bindHost || process.env.NMS_HOST || '127.0.0.1';
   const genieacsUrl = options.genieacsUrl ?? process.env.GENIEACS_URL;
@@ -93,6 +181,8 @@ function createNmsServer(dataDir, options = {}) {
       metaUpdatedAt: metaNames.size > 0 ? Date.now() - META_REFRESH_MS + 60000 : 0,
       maxRep: 15,
       consecutiveSuccess: 0,
+      webOverflowRows: [],
+      webOverflowAt: 0,
     };
   }
 
@@ -283,6 +373,37 @@ function createNmsServer(dataDir, options = {}) {
           rx: state === '2' || !Number.isFinite(rx) || rx < -60 || rx > 15 ? null : rx,
         };
       });
+      if (detectVendor(device) === 'hioso' && device.adminUser && device.adminPassword) {
+        const ponStats = new Map();
+        for (const idx of indexSet) {
+          const m = /^\d+\.(\d+)\.(\d+)$/.exec(idx);
+          if (!m) continue;
+          const p = Number(m[1]);
+          const onu = Number(m[2]);
+          const st = ponStats.get(p) || { count: 0, maxOnu: 0 };
+          st.count += 1;
+          if (onu > st.maxOnu) st.maxOnu = onu;
+          ponStats.set(p, st);
+        }
+        const saturatedPons = [...ponStats.entries()]
+          .filter(([, st]) => st.count >= 64 || st.maxOnu >= 64)
+          .map(([p]) => p);
+        if (saturatedPons.length > 0) {
+          if (!device.webOverflowAt || Date.now() - device.webOverflowAt >= WEB_OVERFLOW_REFRESH_MS) {
+            const overflow = await fetchHiosoWebOverflow(device, saturatedPons);
+            if (overflow.length > 0 || !device.webOverflowRows?.length) {
+              device.webOverflowRows = overflow;
+            }
+            device.webOverflowAt = Date.now();
+          }
+          for (const extra of device.webOverflowRows || []) {
+            if (!indexSet.has(extra.index)) {
+              device.rows.push(extra);
+              indexSet.add(extra.index);
+            }
+          }
+        }
+      }
       device.updated = new Date().toISOString();
       device.pollFailed = false;
       device.consecutiveFailures = 0;
@@ -898,4 +1019,6 @@ function createNmsServer(dataDir, options = {}) {
 
 module.exports = {
   createNmsServer,
+  parseHiosoWebOverflow,
+  fetchHiosoWebOverflow,
 };
