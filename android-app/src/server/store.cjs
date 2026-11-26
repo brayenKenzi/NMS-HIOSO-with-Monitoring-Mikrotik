@@ -26,6 +26,9 @@ function openStore(path) {
     CREATE UNIQUE INDEX IF NOT EXISTS active_alarm ON alarms(key) WHERE until IS NULL;
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
     CREATE TABLE IF NOT EXISTS olt_cache (host TEXT PRIMARY KEY, rows_json TEXT, updated TEXT);
+    CREATE TABLE IF NOT EXISTS interface_samples (router_id TEXT, iface TEXT, at INTEGER, rx REAL, tx REAL,
+      PRIMARY KEY(router_id,iface,at));
+    CREATE INDEX IF NOT EXISTS iface_samples_by_time ON interface_samples(at);
   `);
 
   const sql = statement => db.prepare(statement);
@@ -41,10 +44,13 @@ function openStore(path) {
   const failures = new Map();
   const previous = new Map();
   let lastMinute = -1;
+  let lastIfaceMinute = -1;
   let lastCleanup = 0;
   let baselineCache = { at: 0, map: new Map() };
   const upsert = sql(`INSERT INTO samples(host,mac,at,rx,status,tx,upload) VALUES(?,?,?,?,?,?,?)
     ON CONFLICT(host,mac,at) DO UPDATE SET rx=excluded.rx,status=excluded.status,tx=excluded.tx,upload=excluded.upload`);
+  const upsertIface = sql(`INSERT INTO interface_samples(router_id,iface,at,rx,tx) VALUES(?,?,?,?,?)
+    ON CONFLICT(router_id,iface,at) DO UPDATE SET rx=excluded.rx,tx=excluded.tx`);
   const setOnuState = sql(`INSERT INTO onu_state VALUES(?,?,?,?,?,?,?)
     ON CONFLICT(host,onu_index,mac) DO UPDATE SET status=excluded.status,seen=excluded.seen,
     offline_since=CASE WHEN excluded.status='Offline' AND onu_state.status='Offline'
@@ -362,6 +368,7 @@ function openStore(path) {
   function deleteExpiredLogs(now = Date.now()) {
     const cutoff = now - RETENTION_DAYS * day;
     sql('DELETE FROM samples WHERE at<?').run(cutoff);
+    sql('DELETE FROM interface_samples WHERE at<?').run(cutoff);
     sql('DELETE FROM alarms WHERE until IS NOT NULL AND until<?').run(cutoff);
     sql('DELETE FROM audit WHERE at<?').run(cutoff);
     sql('DELETE FROM sessions WHERE expires<?').run(now);
@@ -428,6 +435,82 @@ function openStore(path) {
     }
   }
 
+  function shouldSampleInterfaces(now = Date.now()) {
+    const at = Math.floor(now / 60000) * 60000;
+    return at !== lastIfaceMinute;
+  }
+
+  function sampleInterfaces(rows, now = Date.now()) {
+    const at = Math.floor(now / 60000) * 60000;
+    if (!Array.isArray(rows) || !rows.length) return 0;
+    let written = 0;
+    db.exec('BEGIN');
+    try {
+      for (const row of rows) {
+        if (!row?.routerId || !row?.iface) continue;
+        const rx = Number.isFinite(row.rx) ? row.rx : null;
+        const tx = Number.isFinite(row.tx) ? row.tx : null;
+        if (rx === null && tx === null) continue;
+        upsertIface.run(String(row.routerId), String(row.iface), at, rx, tx);
+        written += 1;
+      }
+      db.exec('COMMIT');
+      if (written > 0) lastIfaceMinute = at;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    return written;
+  }
+
+  function interfaceHistory(routerId, iface, range = '1', now = Date.now()) {
+    if (range === '7') {
+      const since = now - 7 * day;
+      return sql(`SELECT (at / 600000) * 600000 AS at, AVG(rx) AS rx, AVG(tx) AS tx,
+        MAX(rx) AS rx_max, MAX(tx) AS tx_max
+        FROM interface_samples WHERE router_id=? AND iface=? AND at>=?
+        GROUP BY (at / 600000) ORDER BY at`).all(routerId, iface, since);
+    }
+    const windowMs = range === 'hour' ? 3600000 : day;
+    const since = now - windowMs;
+    return sql('SELECT at, rx, tx FROM interface_samples WHERE router_id=? AND iface=? AND at>=? ORDER BY at')
+      .all(routerId, iface, since);
+  }
+
+  function interfaceSummaries(windowMs = day, now = Date.now()) {
+    const since = now - windowMs;
+    const bucketMs = Math.max(60000, Math.floor(windowMs / 24));
+    const statsRows = sql(`SELECT router_id, iface, AVG(rx) AS avg_rx, MAX(rx) AS max_rx,
+      AVG(tx) AS avg_tx, MAX(tx) AS max_tx,
+      SUM(COALESCE(rx,0)) * 7.5 AS est_rx_bytes,
+      SUM(COALESCE(tx,0)) * 7.5 AS est_tx_bytes,
+      COUNT(*) AS cnt
+      FROM interface_samples WHERE at>=? GROUP BY router_id, iface`).all(since);
+    const sparkRows = sql(`SELECT router_id, iface, (at / ?) * ? AS bucket,
+      AVG(rx) AS rx, AVG(tx) AS tx
+      FROM interface_samples WHERE at>=?
+      GROUP BY router_id, iface, (at / ?) ORDER BY bucket`).all(bucketMs, bucketMs, since, bucketMs);
+
+    const out = new Map();
+    for (const row of statsRows) {
+      out.set(row.router_id + '\0' + row.iface, {
+        avgRx: row.avg_rx ?? null,
+        maxRx: row.max_rx ?? null,
+        avgTx: row.avg_tx ?? null,
+        maxTx: row.max_tx ?? null,
+        estRxBytes: row.est_rx_bytes ?? 0,
+        estTxBytes: row.est_tx_bytes ?? 0,
+        count: row.cnt ?? 0,
+        sparkline: [],
+      });
+    }
+    for (const s of sparkRows) {
+      const entry = out.get(s.router_id + '\0' + s.iface);
+      if (entry) entry.sparkline.push({ at: s.bucket, rx: s.rx ?? null, tx: s.tx ?? null });
+    }
+    return out;
+  }
+
   // Prune logs older than 7 days on startup and attempt initial cloud sync
   try { pruneOldLogs(Date.now()); } catch {}
   void syncFromCloud();
@@ -436,6 +519,7 @@ function openStore(path) {
     hasAdmin, createUser, updateUserPassword, deleteUser, login, session, logout, recordPoll, recordRecovery, sample, rxBaselineMap,
     hasPin, setPin, loginPin, getRouterConfig, setRouterConfig, getRouterConfigs, setRouterConfigs, syncFromCloud,
     saveOltCache, loadOltCache, pruneOldLogs,
+    shouldSampleInterfaces, sampleInterfaces, interfaceHistory, interfaceSummaries,
     onuState: (host, index, mac) => getOnuState.get(host, index, mac) ?? null,
     retireOlt(host) {
       sql('DELETE FROM onu_state WHERE host=?').run(host);

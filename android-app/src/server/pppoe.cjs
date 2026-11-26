@@ -18,6 +18,10 @@ function makeRouterEntry(item, index = 0) {
     oltHosts: Array.isArray(item.oltHosts) ? item.oltHosts.filter(Boolean) : [],
     active: [],
     previous: new Map(),
+    interfaces: [],
+    ifacePrev: new Map(),
+    ifaceLive: new Map(),
+    ifaceMinuteAgg: new Map(),
     sampledAt: null,
     error: null,
     polling: false,
@@ -163,7 +167,7 @@ async function fetchRouterData(entry) {
     return runRosApiCommands(host, port, entry.username, entry.password, [
       ['/ppp/active/print', '=.proplist=.id,name,address,service,caller-id,session-id,uptime'],
       ['/interface/pppoe-server/print', '=.proplist=.id,name,user,running'],
-      ['/interface/print', '=stats=', '?type=pppoe-in', '=.proplist=.id,name,rx-byte,tx-byte'],
+      ['/interface/print', '=stats=', '=.proplist=.id,name,type,running,disabled,comment,rx-byte,tx-byte'],
     ], 6000);
   }
   return Promise.all([
@@ -171,8 +175,7 @@ async function fetchRouterData(entry) {
     request(entry, 'interface/pppoe-server?.proplist=.id,name,user,running'),
     request(entry, 'interface/print', {
       stats: '',
-      '.query': ['type=pppoe-in'],
-      '.proplist': '.id,name,rx-byte,tx-byte',
+      '.proplist': '.id,name,type,running,disabled,comment,rx-byte,tx-byte',
     }),
   ]);
 }
@@ -184,8 +187,11 @@ async function pollSingleRouter(entry, force = false) {
   try {
     const [sessions, interfaces, stats] = await fetchRouterData(entry);
     const now = performance.now();
-    const bindings = group(interfaces.filter(row => row.running === 'true'), row => row.user);
-    const counters = new Map(stats.map(row => [row.name, row]));
+    const wallNow = Date.now();
+    const sampledIso = new Date(wallNow).toISOString();
+    const bindings = group(interfaces.filter(row => row.running === 'true' || row.running === true), row => row.user);
+    const pppStats = stats.filter(row => !row.type || row.type === 'pppoe-in');
+    const counters = new Map(pppStats.map(row => [row.name, row]));
     const currentSessions = sessions.filter(row => row.service === 'pppoe');
     const byUser = group(currentSessions, row => row.name);
     const next = new Map();
@@ -214,12 +220,65 @@ async function pollSingleRouter(entry, force = false) {
       };
     });
     entry.previous = next;
-    entry.sampledAt = new Date().toISOString();
+
+    const nextIfacePrev = new Map();
+    const ifaceRows = stats.filter(row => row.name && row.type && !['pppoe-in', 'loopback'].includes(row.type));
+    const seenIfaces = new Set();
+    entry.interfaces = ifaceRows.map(row => {
+      const ifaceName = String(row.name);
+      seenIfaces.add(ifaceName);
+      const rx = readCounter(row['rx-byte']);
+      const tx = readCounter(row['tx-byte']);
+      const prior = entry.ifacePrev.get(ifaceName);
+      const elapsed = prior ? (now - prior.now) / 1000 : 0;
+      const rxBps = prior ? rate(rx, prior.rx, elapsed) : null;
+      const txBps = prior ? rate(tx, prior.tx, elapsed) : null;
+      if (rx !== null || tx !== null) {
+        nextIfacePrev.set(ifaceName, { rx, tx, now });
+      }
+      if (rxBps != null || txBps != null) {
+        let ring = entry.ifaceLive.get(ifaceName);
+        if (!ring) {
+          ring = [];
+          entry.ifaceLive.set(ifaceName, ring);
+        }
+        ring.push({ at: wallNow, rx: rxBps, tx: txBps });
+        if (ring.length > 60) ring.splice(0, ring.length - 60);
+
+        let agg = entry.ifaceMinuteAgg.get(ifaceName);
+        if (!agg) {
+          agg = { rxSum: 0, txSum: 0, rxCount: 0, txCount: 0 };
+          entry.ifaceMinuteAgg.set(ifaceName, agg);
+        }
+        if (Number.isFinite(rxBps)) { agg.rxSum += rxBps; agg.rxCount += 1; }
+        if (Number.isFinite(txBps)) { agg.txSum += txBps; agg.txCount += 1; }
+      }
+      return {
+        routerId: entry.id,
+        routerName: entry.name,
+        name: ifaceName,
+        type: String(row.type),
+        running: row.running === 'true' || row.running === true,
+        disabled: row.disabled === 'true' || row.disabled === true,
+        comment: row.comment ? String(row.comment) : null,
+        rxBps,
+        txBps,
+        rxGB: rx === null ? null : Number(rx) / 1e9,
+        txGB: tx === null ? null : Number(tx) / 1e9,
+        sampledAt: sampledIso,
+      };
+    });
+    entry.ifacePrev = nextIfacePrev;
+    for (const k of entry.ifaceLive.keys()) {
+      if (!seenIfaces.has(k)) entry.ifaceLive.delete(k);
+    }
+    entry.sampledAt = sampledIso;
     entry.error = null;
     entry.consecutiveFailures = 0;
     entry.nextAllowedPollAt = 0;
   } catch (failure) {
     entry.previous.clear();
+    entry.ifacePrev.clear();
     entry.error = failure.message;
     entry.consecutiveFailures = (entry.consecutiveFailures || 0) + 1;
     // Smart backoff for unreachable off-site routers (10s..60s)
@@ -384,6 +443,46 @@ function pppoeView(devices, override = null) {
   };
 }
 
+function interfaceView() {
+  const now = Date.now();
+  const list = Array.from(routers.values());
+  const availableRouters = list.filter(r => r.sampledAt && !r.error && now - Date.parse(r.sampledAt) <= 45000);
+  const latestSample = availableRouters.map(r => r.sampledAt).sort().at(-1) ?? null;
+  return {
+    sampledAt: latestSample,
+    routers: list.map(r => ({
+      id: r.id,
+      name: r.name,
+      url: r.url,
+      sampledAt: r.sampledAt,
+      error: r.error,
+      available: Boolean(r.sampledAt && !r.error && now - Date.parse(r.sampledAt) <= 45000),
+      interfaces: r.interfaces || [],
+    })),
+  };
+}
+
+function interfaceLiveHistory(routerId, ifaceName) {
+  const entry = routers.get(String(routerId || ''));
+  if (!entry) return [];
+  return [...(entry.ifaceLive.get(String(ifaceName || '')) || [])];
+}
+
+function consumeInterfaceMinuteSamples() {
+  const rows = [];
+  for (const entry of routers.values()) {
+    for (const [iface, agg] of entry.ifaceMinuteAgg) {
+      const rx = agg.rxCount > 0 ? agg.rxSum / agg.rxCount : null;
+      const tx = agg.txCount > 0 ? agg.txSum / agg.txCount : null;
+      if (rx != null || tx != null) {
+        rows.push({ routerId: entry.id, iface, rx, tx });
+      }
+    }
+    entry.ifaceMinuteAgg.clear();
+  }
+  return rows;
+}
+
 module.exports = {
   pppoeInterval,
   initRouterConfig,
@@ -395,5 +494,8 @@ module.exports = {
   probeRouter,
   pollPppoe,
   pppoeView,
+  interfaceView,
+  interfaceLiveHistory,
+  consumeInterfaceMinuteSamples,
   closeRouters: () => closeAllRosApiSessions(),
 };

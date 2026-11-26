@@ -97,17 +97,66 @@ tbody tr:hover{background:#f5f8ff}
 @keyframes restart-spin{to{transform:rotate(360deg)}}
 .restart-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;margin-top:18px}
 .operations{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
-.operations dialog{max-width:min(780px,calc(100% - 28px))}
-.ops-dialog{width:min(760px,calc(100% - 28px));max-height:85dvh;overflow:auto}
+.operations dialog{max-width:min(880px,calc(100% - 24px))}
+.ops-dialog{width:min(860px,calc(100% - 24px));max-height:86dvh;overflow:auto}
 .ops-dialog form label{margin:8px 0}
 .ops-items{padding-inline-start:20px;overflow-wrap:anywhere}
 .ops-items li{padding:7px 0;border-bottom:1px solid var(--line)}
-.ops-charts canvas{display:block;width:100%;height:auto;background:#f8faff;border-radius:12px;cursor:crosshair}
-.ops-charts h3{margin-bottom:4px}
-.ops-charts p{color:var(--muted);font-size:12px}
-.ops-charts .chart-summary,.ops-charts .chart-sample{padding:8px 10px;background:#edf4ff;border-radius:9px;margin:7px 0}
-.ops-charts .chart-sample{min-height:48px}
-.ops-charts input[type=range]{padding:0;min-height:36px;accent-color:var(--blue)}
+.restart-button[aria-pressed=true]{background:#174fcb;border-color:#174fcb;color:#fff}
+.chart-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px;margin:12px 0;box-shadow:0 2px 8px #27487d08}
+.chart-card-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.chart-card-head h3{margin:0;font-size:15px}
+.chart-sub{margin:2px 0 0;color:var(--muted);font-size:12px}
+.chart-legend{display:flex;flex-wrap:wrap;gap:6px}
+.chart-legend-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:99px;border:1px solid #cbd9ef;background:#f8faff;font-size:12px;font-weight:650;min-height:32px}
+.chart-legend-pill[aria-pressed=false]{opacity:.45;text-decoration:line-through}
+.chart-legend-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.chart-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.chart-kpi{background:#f4f8ff;border:1px solid #dbe6fa;border-top:3px solid #2563eb;border-radius:11px;padding:8px 10px;min-width:0}
+.chart-kpi-label{display:block;font-size:11px;color:var(--muted);font-weight:650}
+.chart-kpi-val{display:block;font-size:15.5px;font-weight:750;letter-spacing:-.02em;font-variant-numeric:tabular-nums;color:var(--ink);margin-top:2px}
+.chart-kpi-sub{display:block;font-size:11px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chart-canvas-wrap{position:relative;width:100%;border-radius:12px;background:#fafcff;border:1px solid #e6eefb;overflow:hidden}
+.chart-canvas{display:block;width:100%;cursor:crosshair;touch-action:pan-y}
+.chart-tooltip{position:absolute;pointer-events:none;z-index:5;background:#0f172aeb;color:#f8fafc;padding:8px 10px;border-radius:10px;font-size:12px;box-shadow:0 8px 20px #00000038;min-width:170px}
+.chart-tt-time{font-weight:700;font-size:11px;color:#cbd5e1;margin-bottom:4px}
+.chart-tt-row{display:flex;align-items:center;gap:6px;line-height:1.45}
+.chart-tt-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.chart-tt-total{margin-top:4px;padding-top:4px;border-top:1px solid #ffffff29;color:#93c5fd}
+.chart-empty{padding:14px 0;color:var(--muted);font-size:13px}
+.range-pills{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.client-range-pills{margin:12px 0 4px}
+.range-pill{min-height:38px;padding:6px 12px;border-radius:99px;border:1px solid #b9c8df;background:#f8faff;color:var(--muted);font-size:12.5px;font-weight:650;transition:all 140ms}
+.range-pill[aria-pressed=true]{background:#174fcb;border-color:#174fcb;color:#fff;box-shadow:0 2px 8px #174fcb40}
+.iface-view{display:grid;gap:0}
+.iface-head-row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.iface-sync-badge{font-size:12px;font-weight:650;color:#126745;background:#ecfdf5;border:1px solid #a7f3d0;padding:5px 11px;border-radius:99px}
+.iface-controls{display:grid;grid-template-columns:1fr 1fr 1.3fr auto auto;gap:10px;padding:16px 20px 8px;align-items:end}
+.iface-hero-box{padding:8px 20px 14px}
+.iface-focus-meta{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+.iface-focus-badges{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.iface-pill{display:inline-flex;align-items:center;padding:3px 9px;border-radius:8px;font-size:11.5px;font-weight:650;background:#edf3ff;color:#405271}
+.iface-pill.blue{background:#dbeafe;color:#1d4ed8}
+.iface-pill.strong{background:#142442;color:#fff}
+.iface-pill.green{background:#dcfce7;color:#166534}
+.iface-pill.rose{background:#ffe4e6;color:#9f1239}
+.iface-grid-head{display:flex;justify-content:space-between;align-items:baseline;padding:6px 20px 8px}
+.iface-grid-head h3{margin:0;font-size:16px}
+.iface-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:0 20px 22px}
+.iface-card{display:grid;gap:7px;text-align:left;padding:12px 13px;border:1px solid var(--line);border-radius:16px;background:#fff;transition:border-color 140ms,box-shadow 140ms,transform 120ms}
+.iface-card:hover{border-color:#93b4f5;box-shadow:0 6px 16px #27487d10}
+.iface-card[aria-current=true]{border:2px solid #174fcb;background:#f7faff;box-shadow:0 6px 18px #174fcb24}
+.iface-card-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.iface-card-title{display:flex;align-items:center;gap:7px;min-width:0;font-size:14px;overflow-wrap:anywhere}
+.iface-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.iface-dot.up{background:#10b981;box-shadow:0 0 0 3px #10b98133}
+.iface-dot.down{background:#ef4444}
+.iface-type-badge{font-size:10px;font-weight:750;padding:2px 7px;border-radius:6px;background:#edf3ff;color:#405271;flex:none}
+.iface-card-sub{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.iface-card-rates{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;background:#f8faff;padding:7px 8px;border-radius:10px}
+.iface-card-rates span{display:block;font-size:10.5px;color:var(--muted)}
+.iface-card-rates strong{display:block;font-size:12.5px;font-weight:750;font-variant-numeric:tabular-nums}
+.iface-spark{display:block;width:100%;height:52px}
 .client-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}
 .client-facts div{padding:8px 10px;background:#f0f5ff;border-radius:10px;overflow-wrap:anywhere}
 .client-facts dt{color:var(--muted);font-size:12px}
@@ -129,11 +178,17 @@ tbody tr:hover{background:#f5f8ff}
   .sidebar{position:static;min-height:0;border-right:0;border-bottom:1px solid var(--line);padding:14px clamp(15px,2.6vw,42px)}
   .brand{margin:0 0 12px}.sidebar h2{margin-left:0}.inventory{grid-template-columns:repeat(3,minmax(0,1fr))}
   .toolbar{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .iface-controls{grid-template-columns:1fr 1fr}
+  .iface-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media(max-width:760px){
   main{padding-top:15px}.hero{min-height:0}.hero::before{width:80%}
   .brand img{width:78px;height:58px}
   .metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.metric{border-radius:17px}
+  .chart-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .iface-controls{grid-template-columns:1fr;padding:12px}
+  .iface-hero-box,.iface-grid-head,.iface-grid{padding-inline:12px}
+  .iface-grid{grid-template-columns:1fr}
   .inventory{grid-template-columns:repeat(2,minmax(0,1fr))}
   .inventory button{font-size:12px;padding:8px}.inventory small{font-size:11px}
   .toolbar{grid-template-columns:repeat(2,minmax(0,1fr));padding:12px}
@@ -156,9 +211,10 @@ tbody tr:hover{background:#f5f8ff}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}button:active{transform:none!important}}
 </style>
 <div class="shell">
-<aside class="sidebar"><div class="brand"><img src="/momo-logo.png" alt="ADT Monitoring"></div><h2>Tampilan pelanggan</h2><nav id="inventory" class="inventory" aria-label="Tampilan pelanggan"></nav></aside>
+<aside class="sidebar"><div class="brand"><img src="/momo-logo.png" alt="ADT Monitoring"></div><h2>Tampilan pelanggan</h2><nav id="inventory" class="inventory" aria-label="Tampilan pelanggan"></nav><h2 style="margin-top:18px">Tampilan jaringan</h2><div class="inventory"><button type="button" id="sidebar-iface-btn" aria-pressed="false"><span>📈 Grafik Interface</span><small>MikroTik · Mbps harian</small></button></div></aside>
 <main>
 <nav class="operations" id="operations-menu" aria-label="Operasional" hidden>
+  <button type="button" class="restart-button" id="iface-graph-menu" aria-pressed="false">📈 Grafik Interface</button>
   <button type="button" class="restart-button" id="alarm-menu">Alarm</button>
   <button type="button" class="restart-button" id="admin-menu" hidden>Admin</button>
   <button type="button" class="restart-button" id="offline-menu" hidden>ONU Lama Offline</button>
@@ -167,11 +223,12 @@ tbody tr:hover{background:#f5f8ff}
   <button type="button" class="restart-button" id="logout">Keluar</button>
   <span id="session-user"></span>
 </nav>
-<header class="hero"><div><h1>Monitoring Pelanggan</h1><p id="active-device">Memuat perangkat…</p></div><span class="live" id="live">Memuat status</span></header>
+<header class="hero"><div><h1 id="hero-title">Monitoring Pelanggan</h1><p id="active-device">Memuat perangkat…</p></div><span class="live" id="live">Memuat status</span></header>
 <div id="network-banner" class="network-banner" role="alert" hidden>
   <span>⚠ Harus terhubung ke Wi-Fi <strong>MOMO NET</strong> — menampilkan data lama tersimpan. Hubungkan HP ke Wi-Fi <strong>MOMO NET</strong> agar pemantauan berjalan.</span>
   <button type="button" class="restart-button" id="banner-retry-btn">Coba Ping Ulang</button>
 </div>
+<div id="onu-view">
 <div class="metrics" aria-label="Ringkasan ONU">
 <div class="metric">Total ONU<strong id="total">—</strong></div>
 <div class="metric">Online<strong id="online">—</strong></div>
@@ -201,6 +258,8 @@ tbody tr:hover{background:#f5f8ff}
 <p id="empty" hidden></p>
 <nav class="pager" id="pager" aria-label="Halaman daftar ONU" hidden><button type="button" id="previous">Sebelumnya</button><span id="page-info"></span><button type="button" id="next">Berikutnya</button></nav>
 </section>
+</div>
+<div id="interface-graph-mount" hidden></div>
 </main>
 </div>
 <dialog class="restart-dialog" id="restart-dialog" aria-labelledby="restart-title">
@@ -252,11 +311,17 @@ tbody tr:hover{background:#f5f8ff}
     <button type="button" class="restart-button" id="network-close-btn">Tutup (Lihat Data Lama)</button>
   </div>
 </dialog>
+<script src="/charts.js"></script>
 <script src="/operations.js"></script>
 <script>
 const criticalFilterBtn = document.querySelector('#critical-filter-btn');
 const fastRefreshBtn = document.querySelector('#fast-refresh-btn');
 const restartSnmpBtn = document.querySelector('#restart-snmp-btn');
+const ifaceGraphMenu = document.querySelector('#iface-graph-menu');
+const sidebarIfaceBtn = document.querySelector('#sidebar-iface-btn');
+const heroTitle = document.querySelector('#hero-title');
+const onuView = document.querySelector('#onu-view');
+const ifaceMount = document.querySelector('#interface-graph-mount');
 const opsNotice = document.querySelector('#ops-notice');
 const networkDialog = document.querySelector('#network-dialog');
 const networkRetryBtn = document.querySelector('#network-retry-btn');
@@ -311,6 +376,32 @@ let dashboardLoopStarted = false;
 let networkCheckInFlight = false;
 let loadTimer = null;
 let lastPonOptionsKey = '';
+let activeMode = 'onu';
+const ifaceGraphView = window.nmsCharts.createInterfaceGraphView({ api: nmsOperations.api });
+ifaceMount.append(ifaceGraphView.element);
+
+function switchViewMode(mode) {
+  if (!loggedIn && mode === 'interfaces') return;
+  activeMode = mode === 'interfaces' ? 'interfaces' : 'onu';
+  const showIface = activeMode === 'interfaces';
+  onuView.hidden = showIface;
+  ifaceMount.hidden = !showIface;
+  ifaceGraphMenu.setAttribute('aria-pressed', String(showIface));
+  sidebarIfaceBtn.setAttribute('aria-pressed', String(showIface));
+  if (showIface) {
+    setText(heroTitle, 'Grafik Interface MikroTik');
+    setText(activeDevice, 'Trafik port harian (Mbps), puncak pemakaian & tren realtime');
+    restartSnmpBtn.hidden = true;
+    ifaceGraphView.show();
+  } else {
+    setText(heroTitle, 'Monitoring Pelanggan');
+    ifaceGraphView.hide();
+    render();
+  }
+  renderInventory();
+}
+ifaceGraphMenu.onclick = () => switchViewMode(activeMode === 'interfaces' ? 'onu' : 'interfaces');
+sidebarIfaceBtn.onclick = () => switchViewMode('interfaces');
 
 function extractPonNumber(index) {
   const str = String(index ?? '');
@@ -591,6 +682,7 @@ function selectedView() {
 }
 
 function render() {
+  if (activeMode !== 'onu') return;
   const current = selectedView();
   setText(activeDevice, current ? current.name + ' · ' + current.host :
     inventoryLoaded ? 'Belum ada OLT terdaftar' : 'Memuat perangkat…');
@@ -707,13 +799,12 @@ function renderInventory() {
       button.addEventListener('click', () => {
         selected = button.dataset.host;
         page = 0;
-        renderInventory();
-        render();
+        switchViewMode('onu');
       });
       inventory.append(button);
     }
     button.dataset.host = olt.host;
-    button.setAttribute('aria-pressed', olt.host === selected);
+    button.setAttribute('aria-pressed', activeMode === 'onu' && olt.host === selected);
     setText(button.firstElementChild, olt.name);
     setText(button.lastElementChild, olt.detail);
   });

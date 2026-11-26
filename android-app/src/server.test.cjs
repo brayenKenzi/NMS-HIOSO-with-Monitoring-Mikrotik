@@ -1217,3 +1217,204 @@ test('store enforces 7-day log retention on samples/alarms/audit and records adm
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 });
+
+test('pppoe module collects non-PPPoE interface rates, live ring buffer, and minute averages alongside PPPoE sessions', async () => {
+  const { updateRouterConfigs, pollPppoe, interfaceView, interfaceLiveHistory, consumeInterfaceMinuteSamples, pppoeView } = require('./server/pppoe.cjs');
+  let tick = 0;
+  const mockRouter = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const c of req) raw += c;
+    const u = new URL(req.url, 'http://127.0.0.1');
+    if (u.pathname === '/rest/ppp/active') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([
+        { '.id': '*1', name: 'klien-a', address: '10.1.0.10', service: 'pppoe', 'caller-id': 'AA:BB:CC:DD:EE:01', 'session-id': 's1', uptime: '1h' },
+      ]));
+      return;
+    }
+    if (u.pathname === '/rest/interface/pppoe-server') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([
+        { '.id': '*2', name: '<pppoe-klien-a>', user: 'klien-a', running: 'true' },
+      ]));
+      return;
+    }
+    if (u.pathname === '/rest/interface/print') {
+      const mul = tick;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([
+        { '.id': '*1', name: 'ether1-UPLINK', type: 'ether', running: 'true', disabled: 'false', comment: 'ISP', 'rx-byte': String(1000000 + mul * 500000), 'tx-byte': String(2000000 + mul * 250000) },
+        { '.id': '*2', name: 'vlan333-PPPOE', type: 'vlan', running: 'true', disabled: 'false', 'rx-byte': String(300000 + mul * 100000), 'tx-byte': String(400000 + mul * 200000) },
+        { '.id': '*3', name: 'lo', type: 'loopback', running: 'true', disabled: 'false', 'rx-byte': '100', 'tx-byte': '100' },
+        { '.id': '*4', name: '<pppoe-klien-a>', type: 'pppoe-in', running: 'true', disabled: 'false', 'rx-byte': String(50000 + mul * 12500), 'tx-byte': String(80000 + mul * 25000) },
+      ]));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+
+  await new Promise(r => mockRouter.listen(0, '127.0.0.1', r));
+  const rPort = mockRouter.address().port;
+  try {
+    updateRouterConfigs([{ id: 'r-test', name: 'Router Test', url: 'http://127.0.0.1:' + rPort, username: 'admin', password: 'pw' }]);
+    await pollPppoe(true);
+    tick = 1;
+    await new Promise(r => setTimeout(r, 80));
+    await pollPppoe(true);
+
+    const view = interfaceView();
+    assert.equal(view.routers.length, 1);
+    const ifaces = view.routers[0].interfaces;
+    assert.equal(ifaces.some(i => i.name === 'lo' || i.name === '<pppoe-klien-a>'), false);
+    const uplink = ifaces.find(i => i.name === 'ether1-UPLINK');
+    assert.ok(uplink);
+    assert.equal(uplink.running, true);
+    assert.equal(uplink.comment, 'ISP');
+    assert.ok(Number.isFinite(uplink.rxBps) && uplink.rxBps > 0);
+    assert.ok(Number.isFinite(uplink.txBps) && uplink.txBps > 0);
+
+    const livePts = interfaceLiveHistory('r-test', 'ether1-UPLINK');
+    assert.equal(livePts.length, 1);
+    assert.ok(livePts[0].rx > 0);
+
+    const mins = consumeInterfaceMinuteSamples();
+    assert.equal(mins.length, 2);
+    assert.equal(consumeInterfaceMinuteSamples().length, 0);
+
+    // PPPoE matching remains intact
+    const matched = pppoeView([{ host: '10.0.0.1', rows: [{ mac: 'AA:BB:CC:DD:EE:01', status: 'Online' }] }])
+      .match({ mac: 'AA:BB:CC:DD:EE:01', status: 'Online' }, '10.0.0.1');
+    assert.equal(matched.username, 'klien-a');
+    assert.ok(Number.isFinite(matched.txBps) && matched.txBps > 0);
+  } finally {
+    updateRouterConfigs([]);
+    mockRouter.closeAllConnections?.();
+    mockRouter.close();
+  }
+});
+
+test('store persists interface_samples, aggregates 7d buckets & 24h summaries, and prunes >7d rows', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'momo-iface-store-'));
+  try {
+    const store = openStore(join(dir, 'iface.sqlite'));
+    const now = Math.floor(Date.now() / 600000) * 600000 + 120000;
+    const nineDaysAgo = now - 9 * 86400000;
+    const twoDaysAgo = now - 2 * 86400000;
+    const tenMinAgo = now - 10 * 60000;
+
+    assert.equal(store.shouldSampleInterfaces(now), true);
+    store.sampleInterfaces([{ routerId: 'r1', iface: 'ether1-UP LINK', rx: 120e6, tx: 30e6 }], nineDaysAgo);
+    store.sampleInterfaces([{ routerId: 'r1', iface: 'ether1-UP LINK', rx: 60e6, tx: 15e6 }], twoDaysAgo);
+    store.sampleInterfaces([{ routerId: 'r1', iface: 'ether1-UP LINK', rx: 80e6, tx: 20e6 }], twoDaysAgo + 60000);
+    store.sampleInterfaces([{ routerId: 'r1', iface: 'ether1-UP LINK', rx: 100e6, tx: 25e6 }], tenMinAgo);
+    store.sampleInterfaces([{ routerId: 'r1', iface: 'ether1-UP LINK', rx: 200e6, tx: 50e6 }], now);
+    assert.equal(store.shouldSampleInterfaces(now), false);
+
+    store.pruneOldLogs(now);
+    const hourPts = store.interfaceHistory('r1', 'ether1-UP LINK', 'hour', now);
+    assert.equal(hourPts.length, 2);
+    assert.equal(hourPts[1].rx, 200e6);
+
+    const sevenDayPts = store.interfaceHistory('r1', 'ether1-UP LINK', '7', now);
+    assert.equal(sevenDayPts.length, 3); // 9d row pruned; 2d rows grouped (avg 70e6) + 10m bucket + current bucket
+    assert.equal(sevenDayPts[0].rx, 70e6);
+    assert.equal(sevenDayPts[1].rx, 100e6);
+    assert.equal(sevenDayPts[2].rx, 200e6);
+
+    const summaries = store.interfaceSummaries(86400000, now);
+    const s = summaries.get('r1\0ether1-UP LINK');
+    assert.ok(s);
+    assert.equal(s.maxRx, 200e6);
+    assert.equal(s.avgRx, 150e6);
+    assert.ok(s.estRxBytes > 0);
+    assert.ok(s.sparkline.length >= 1);
+    store.close();
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('HTTP endpoints /api/interfaces, /api/interfaces/history, and /charts.js enforce auth and return valid payloads', async () => {
+  const { updateRouterConfigs, pollPppoe } = require('./server/pppoe.cjs');
+  const dir = mkdtempSync(join(tmpdir(), 'momo-iface-http-'));
+  let nms;
+  let tick = 0;
+  const mockRouter = http.createServer(async (req, res) => {
+    const u = new URL(req.url, 'http://127.0.0.1');
+    if (u.pathname === '/rest/ppp/active' || u.pathname === '/rest/interface/pppoe-server') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('[]');
+      return;
+    }
+    if (u.pathname === '/rest/interface/print') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([
+        { '.id': '*1', name: 'ether1-UPLINK', type: 'ether', running: 'true', disabled: 'false', 'rx-byte': String(500000 + tick * 250000), 'tx-byte': String(200000 + tick * 125000) },
+      ]));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+
+  await new Promise(r => mockRouter.listen(0, '127.0.0.1', r));
+  const rPort = mockRouter.address().port;
+
+  try {
+    nms = createNmsServer(dir, {
+      port: 0,
+      seedOlts: [{ name: 'OLT TEST', host: '192.168.100.2', community: 'public', port: 161 }],
+    });
+    const port = await nms.start();
+
+    // Wait briefly so auth cookie is ready & setup admin
+    const unauth = await fetch('http://127.0.0.1:' + port + '/api/interfaces');
+    assert.equal(unauth.status, 401);
+
+    const setupRes = await fetch('http://127.0.0.1:' + port + '/api/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'password123' }),
+    });
+    const cookie = (setupRes.headers.get('set-cookie') || '').split(';')[0];
+
+    // Configure router and poll twice
+    updateRouterConfigs([{ id: 'r-http', name: 'MikroTik Utama', url: 'http://127.0.0.1:' + rPort, username: 'admin', password: 'pw' }]);
+    await pollPppoe(true);
+    tick = 1;
+    await new Promise(r => setTimeout(r, 80));
+    await pollPppoe(true);
+
+    // /charts.js served cleanly
+    const jsRes = await fetch('http://127.0.0.1:' + port + '/charts.js');
+    assert.equal(jsRes.status, 200);
+    assert.match(await jsRes.text(), /createInterfaceGraphView/);
+
+    // /api/interfaces overview
+    const ovRes = await fetch('http://127.0.0.1:' + port + '/api/interfaces?days=1', { headers: { Cookie: cookie } });
+    assert.equal(ovRes.status, 200);
+    const ov = await ovRes.json();
+    assert.equal(ov.routers.length, 1);
+    assert.equal(ov.routers[0].interfaces[0].name, 'ether1-UPLINK');
+    assert.ok(ov.routers[0].interfaces[0].rxBps > 0);
+
+    // /api/interfaces/history validation & live range
+    const badHist = await fetch('http://127.0.0.1:' + port + '/api/interfaces/history', { headers: { Cookie: cookie } });
+    assert.equal(badHist.status, 400);
+
+    const liveHist = await fetch('http://127.0.0.1:' + port + '/api/interfaces/history?routerId=r-http&iface=ether1-UPLINK&range=live', {
+      headers: { Cookie: cookie },
+    });
+    assert.equal(liveHist.status, 200);
+    const livePayload = await liveHist.json();
+    assert.equal(livePayload.meta.routerName, 'MikroTik Utama');
+    assert.ok(livePayload.points.length >= 1);
+    assert.ok(livePayload.points[0].rx > 0);
+  } finally {
+    updateRouterConfigs([]);
+    try { nms?.stop(); } catch {}
+    mockRouter.closeAllConnections?.();
+    mockRouter.close();
+    await new Promise(r => setTimeout(r, 100));
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});

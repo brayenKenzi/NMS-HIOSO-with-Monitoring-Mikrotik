@@ -9,7 +9,7 @@ const { createRoutes, json } = require('./routes.cjs');
 const { canRestart, restartRequest, isSameOriginAllowed } = require('./restart-onu.cjs');
 const routerModule = require('./pppoe.cjs');
 const genieacs = require('./genieacs.cjs');
-const { page, operations, worker, logo } = require('./static-assets.cjs');
+const { page, operations, charts, worker, logo } = require('./static-assets.cjs');
 const { supabase } = require('./supabase.cjs');
 
 const root = '1.3.6.1.4.1.25355.3.2.6';
@@ -806,9 +806,9 @@ function createNmsServer(dataDir, options = {}) {
           store.finishAudit(auditId, code, code >= 500);
           json(res, code, { message: err.message || 'Gagal mengubah pengaturan Wi-Fi.' });
         }
-      } else if (req.method === 'GET' && ['/operations.js', '/nms-worker.js'].includes(req.url)) {
+      } else if (req.method === 'GET' && ['/operations.js', '/charts.js', '/nms-worker.js'].includes(req.url)) {
         res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
-        res.end(req.url === '/operations.js' ? operations : worker);
+        res.end(req.url === '/operations.js' ? operations : req.url === '/charts.js' ? charts : worker);
       } else if (req.method === 'GET' && req.url === '/momo-logo.png') {
         res.setHeader('Content-Type', 'image/png');
         res.end(logo);
@@ -857,8 +857,13 @@ function createNmsServer(dataDir, options = {}) {
         snmpIntervalId = setInterval(pollAll, 15000);
         pppoeIntervalId = setInterval(routerModule.pollPppoe, routerModule.pppoeInterval);
         sampleIntervalId = setInterval(() => {
-          try { store.sample(devices, routerModule.pppoeView(devices)); }
-          catch (e) { console.error('Sample history error:', e.message); }
+          try {
+            store.sample(devices, routerModule.pppoeView(devices));
+            if (store.shouldSampleInterfaces()) {
+              const ifaceRows = routerModule.consumeInterfaceMinuteSamples();
+              if (ifaceRows.length > 0) store.sampleInterfaces(ifaceRows);
+            }
+          } catch (e) { console.error('Sample history error:', e.message); }
         }, 10000);
         done(activePort);
       }

@@ -377,6 +377,66 @@ function createRoutes(store, port, olts, findClientName, clients, routerModule, 
         if (![0, 7, 14, 30].includes(days)) json(res, 400, { message: 'Ambang offline tidak valid.' });
         else json(res, 200, clients.offline(days));
       }
+    } else if (path === '/api/interfaces') {
+      const daysParam = url.searchParams.get('days') || '1';
+      const windowMs = daysParam === '7' ? 7 * 86400000 : daysParam === 'hour' ? 3600000 : 86400000;
+      const view = routerModule.interfaceView?.() ?? { sampledAt: null, routers: [] };
+      const summaries = store.interfaceSummaries?.(windowMs) ?? new Map();
+      json(res, 200, {
+        days: daysParam,
+        sampledAt: view.sampledAt,
+        routers: view.routers.map(r => ({
+          id: r.id,
+          name: r.name,
+          available: r.available,
+          sampledAt: r.sampledAt,
+          error: r.error,
+          interfaces: (r.interfaces || []).map(iface => ({
+            ...iface,
+            summary: summaries.get(r.id + '\0' + iface.name) ?? null,
+          })),
+        })),
+      });
+    } else if (path === '/api/interfaces/history') {
+      const routerId = url.searchParams.get('routerId');
+      const iface = url.searchParams.get('iface');
+      const range = url.searchParams.get('range') || url.searchParams.get('days') || '1';
+      if (!routerId || !iface) {
+        json(res, 400, { message: 'Parameter routerId dan iface wajib diisi.' });
+        return false;
+      }
+      const view = routerModule.interfaceView?.() ?? { routers: [] };
+      const rObj = view.routers.find(r => r.id === routerId);
+      const ifObj = rObj?.interfaces?.find(i => i.name === iface);
+      const meta = {
+        routerId,
+        routerName: rObj?.name || routerId,
+        iface,
+        type: ifObj?.type || null,
+        running: ifObj?.running ?? null,
+        disabled: ifObj?.disabled ?? null,
+        comment: ifObj?.comment || null,
+        liveRxBps: ifObj?.rxBps ?? null,
+        liveTxBps: ifObj?.txBps ?? null,
+        rxGB: ifObj?.rxGB ?? null,
+        txGB: ifObj?.txGB ?? null,
+        sampledAt: ifObj?.sampledAt || rObj?.sampledAt || null,
+      };
+      let points;
+      if (range === 'live') {
+        const livePts = routerModule.interfaceLiveHistory?.(routerId, iface) ?? [];
+        if (livePts.length < 3 && store.interfaceHistory) {
+          const cutoff = livePts.length ? livePts[0].at : Date.now();
+          const recentHour = store.interfaceHistory(routerId, iface, 'hour')
+            .filter(p => p.at >= cutoff - 900000 && p.at < cutoff);
+          points = [...recentHour, ...livePts];
+        } else {
+          points = livePts;
+        }
+      } else {
+        points = store.interfaceHistory?.(routerId, iface, range) ?? [];
+      }
+      json(res, 200, { routerId, iface, range, meta, points });
     } else if (path === '/api/onu/detail' || path === '/api/history') {
       const host = url.searchParams.get('host');
       const mac = url.searchParams.get('mac');

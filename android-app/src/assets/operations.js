@@ -592,129 +592,6 @@ const nmsOperations = (() => {
     await reload();
   }
 
-  function chart(title, unit, data, series, windowMs) {
-    const section = element('section', null, 'ops-charts');
-    section.append(element('h3', title));
-    const points = data.filter(row => series.some(({ key }) => Number.isFinite(row[key])));
-    if (!points.length) {
-      section.append(element('p', 'Belum ada sampel untuk rentang ini.'));
-      return section;
-    }
-    const number = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 2 });
-    const measure = value => Number.isFinite(value) ? number.format(value) + ' ' + unit : '—';
-    const stats = series.map(({ key, label, color }) => {
-      const values = points.map(row => row[key]).filter(Number.isFinite);
-      const low = values.length ? Math.min(...values) : null;
-      const high = values.length ? Math.max(...values) : null;
-      const avg = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
-      const text = [label, 'Terakhir ' + measure(values.at(-1)), 'Min ' + measure(low),
-        'Rata-rata ' + measure(avg), 'Maks ' + measure(high)].join(' · ');
-      const summary = element('p', text);
-      summary.style.borderInlineStart = '3px solid ' + color;
-      summary.className = 'chart-summary';
-      section.append(summary);
-      return { low, high };
-    });
-    let min = unit === 'Mbps' ? 0 : Math.floor(Math.min(...stats.map(s => s.low ?? Infinity)));
-    let max = Math.max(...stats.map(s => s.high ?? -Infinity));
-    if (unit === 'dBm') max = Math.ceil(max);
-    if (max === min) { if (unit === 'dBm') min -= 1; max += 1; }
-    const canvas = element('canvas');
-    canvas.setAttribute('role', 'img');
-    canvas.setAttribute('aria-label', 'Grafik ' + title + '. Gunakan pemilih sampel untuk membaca data.');
-    const end = Date.now();
-    const begin = Math.max(end - windowMs, data[0].at - 60000);
-    const labelTime = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Makassar',
-      ...(end - begin > 86400000 ? { day:'2-digit', month:'2-digit' } : { hour:'2-digit', minute:'2-digit' }) });
-    const sample = element('p', null, 'chart-sample');
-    const label = element('label', 'Pilih sampel ' + title);
-    const picker = element('input');
-    Object.assign(picker, { type:'range', min:'0', max:String(points.length - 1), value:String(points.length - 1),
-      disabled: points.length < 2 });
-    label.append(picker);
-    section.append(canvas, label, sample);
-    const height = 186;
-    const left = 48;
-    const right = 12;
-    const top = 12;
-    const bottom = 150;
-    let width = 0;
-
-    function draw() {
-      width = Math.max(220, canvas.clientWidth);
-      const scale = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = width * scale;
-      canvas.height = height * scale;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.scale(scale, scale);
-      const x = at => left + (at - begin) / (end - begin) * (width - left - right);
-      const y = value => bottom - (value - min) / (max - min) * (bottom - top);
-      ctx.font = '11px system-ui';
-      ctx.fillStyle = '#526381';
-      ctx.strokeStyle = '#dbe5f5';
-      ctx.textAlign = 'right';
-      for (let i = 0; i <= 4; i++) {
-        const value = min + (max - min) * i / 4;
-        const position = y(value);
-        ctx.beginPath();
-        ctx.moveTo(left, position);
-        ctx.lineTo(width - right, position);
-        ctx.stroke();
-        ctx.fillText(number.format(value), left - 6, position + 4);
-      }
-      ctx.textAlign = 'left';
-      ctx.fillText(labelTime.format(begin), left, 172);
-      ctx.textAlign = 'right';
-      ctx.fillText(labelTime.format(end) + ' WITA', width - right, 172);
-      for (const { key, color } of series) {
-        ctx.strokeStyle = ctx.fillStyle = color;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        let previousAt = 0;
-        for (const row of data) {
-          if (!Number.isFinite(row[key])) { previousAt = 0; continue; }
-          const px = x(row.at);
-          const py = y(row[key]);
-          if (row.at - previousAt <= 120000) ctx.lineTo(px, py);
-          else { ctx.moveTo(px, py); ctx.fillRect(px - 1, py - 1, 3, 3); }
-          previousAt = row.at;
-        }
-        ctx.stroke();
-      }
-      const point = points[Number(picker.value)];
-      const cursor = x(point.at);
-      ctx.strokeStyle = '#526381';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(cursor, top);
-      ctx.lineTo(cursor, bottom);
-      ctx.stroke();
-      for (const { key, color } of series) {
-        if (!Number.isFinite(point[key])) continue;
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(cursor, y(point[key]), 4, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      sample.textContent = [time(point.at), ...series.map(({ key, label }) => label + ' ' + measure(point[key]))].join(' · ');
-      picker.setAttribute('aria-valuetext', sample.textContent);
-    }
-    picker.addEventListener('input', draw);
-    canvas.addEventListener('pointerdown', event => {
-      const at = begin + (event.clientX - canvas.getBoundingClientRect().left - left) /
-        (width - left - right) * (end - begin);
-      let closest = 0;
-      for (let i = 1; i < points.length; i++) {
-        if (Math.abs(points[i].at - at) < Math.abs(points[closest].at - at)) closest = i;
-      }
-      picker.value = String(closest);
-      draw();
-    });
-    requestAnimationFrame(draw);
-    return section;
-  }
-
   const shownTime = value => value == null ? 'Belum teramati' : time(value);
 
   function clientFacts(client) {
@@ -885,14 +762,24 @@ const nmsOperations = (() => {
     const facts = element('div');
     const actions = element('div', null, 'client-actions');
     const genieBox = createGenieAcsPanel(row);
-    const range = element('select');
-    range.add(new Option('1 jam', 'hour'));
-    range.add(new Option('24 jam', '1'));
-    range.add(new Option('7 hari', '7'));
-    range.value = '1';
-    range.setAttribute('aria-label', 'Rentang riwayat');
+    let currentDays = '1';
+    const rangeBar = element('div', null, 'range-pills client-range-pills');
+    const rangeButtons = new Map();
+    for (const [val, label] of [['hour', '1 Jam'], ['1', '24 Jam (Harian)'], ['7', '7 Hari']]) {
+      const btn = element('button', label, 'range-pill');
+      btn.type = 'button';
+      btn.setAttribute('aria-pressed', String(val === currentDays));
+      btn.addEventListener('click', () => {
+        if (currentDays === val) return;
+        currentDays = val;
+        for (const [k, b] of rangeButtons) b.setAttribute('aria-pressed', String(k === val));
+        void update();
+      });
+      rangeButtons.set(val, btn);
+      rangeBar.append(btn);
+    }
     const result = element('div');
-    target.replaceChildren(identity, facts, actions, genieBox, range, result);
+    target.replaceChildren(identity, facts, actions, genieBox, rangeBar, result);
     if (back) {
       const returnButton = element('button', 'Kembali ke kandidat', 'restart-button');
       returnButton.type = 'button';
@@ -900,14 +787,14 @@ const nmsOperations = (() => {
       target.prepend(returnButton);
     }
     async function update() {
-      const days = range.value;
+      const days = currentDays;
       const windowMs = days === 'hour' ? 3600000 : Number(days) * 86400000;
       result.replaceChildren(element('p', 'Memuat riwayat…'));
       try {
         const { client, history: data, actions: activity } = await api('/api/onu/detail?' + new URLSearchParams({
           host: row.source.host, mac: row.mac, index: row.index, days,
         }));
-        if (range.value !== days) return;
+        if (currentDays !== days) return;
         facts.replaceChildren(clientFacts(client));
         if (client.duplicate) facts.append(element('p', 'MAC ganda di OLT ini. Detail menggunakan registrasi ONU yang dipilih.'));
         actions.replaceChildren();
@@ -928,20 +815,46 @@ const nmsOperations = (() => {
           text: (event.operation === 'delete' ? 'Hapus ONU' : event.operation === 'wifi' ? 'Ubah Wi-Fi' : 'Restart Modem') + ' · ' + event.username +
             ' · ' + (outcomes[event.outcome] ?? event.outcome) + (event.recovery === 'online' ? ' · Kembali online' : ''),
         }))].sort((a, b) => b.at - a.at).slice(0, 30);
-        const traffic = data.map(r => ({ ...r, tx: r.tx == null ? null : r.tx / 1e6,
-          upload: r.upload == null ? null : r.upload / 1e6 }));
+
+        const rangeLabel = days === '7' ? '7 hari terakhir' : days === 'hour' ? '1 jam terakhir' : '24 jam terakhir (Harian)';
+        const pppUser = client.pppoe?.username;
+        const trafficChart = window.nmsCharts.renderAreaChart({
+          title: 'Trafik Pemakaian Pelanggan',
+          subtitle: (pppUser ? 'PPPoE: ' + pppUser + ' · ' : '') + rangeLabel + ' (sentuh/arahkan ke grafik untuk detail)',
+          data,
+          series: [
+            { key: 'tx', short: 'Unduh', label: 'Unduh (Download)', color: '#2563eb' },
+            { key: 'upload', short: 'Unggah', label: 'Unggah (Upload)', color: '#0d9488' },
+          ],
+          windowMs,
+          height: 235,
+          rawBps: true,
+          unit: 'Mbps',
+          kpiMode: 'traffic',
+          gapBreakMs: 12 * 60000,
+        });
+        const rxChart = window.nmsCharts.renderAreaChart({
+          title: 'Redaman Optik (RX)',
+          subtitle: 'Hijau > −25 dBm · Kuning −25 s.d −27 dBm · Merah ≤ −27 dBm',
+          data,
+          series: [
+            { key: 'rx', short: 'Redaman', label: 'Redaman Optik', color: '#4f46e5' },
+          ],
+          windowMs,
+          height: 205,
+          rawBps: false,
+          unit: 'dBm',
+          kpiMode: 'optical',
+          gapBreakMs: 12 * 60000,
+        });
         result.replaceChildren(
-          chart('Redaman', 'dBm', data, [{ key:'rx', label:'Redaman', color:'#174fcb' }], windowMs),
-          chart('Trafik PPPoE', 'Mbps', traffic, [
-            { key:'tx', label:'TX Unduh', color:'#174fcb' },
-            { key:'upload', label:'RX Unggah', color:'#a12b66' },
-          ], windowMs),
+          trafficChart,
+          rxChart,
           element('h3', 'Lini masa'),
           items(timeline, event => time(event.at) + ' · ' + event.text, 'Belum ada perubahan status tercatat.'),
         );
       } catch (error) { result.replaceChildren(element('p', error.message)); }
     }
-    range.addEventListener('change', update);
     await update();
   }
 
@@ -1138,5 +1051,5 @@ const nmsOperations = (() => {
     }
   }
 
-  return { start, historyButton, deleteButton };
+  return { start, historyButton, deleteButton, api };
 })();
